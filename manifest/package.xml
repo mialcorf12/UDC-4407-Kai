@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Package xmlns="http://soap.sforce.com/2006/04/metadata">
+	<types>
+		<members>AccountAssignmentRules</members>
+		<members>AccountAssignmentRulesQueueable</members>
+		<members>AccountAssignmentRulesTest</members>
+		<members>UdcOnboardingService</members>
+		<members>UdcOnboardingServiceTest</members>
+		<name>ApexClass</name>
+	</types>
+	<types>
+		<members>Copy_pricing_fields_on_MRA_record_from_MR_record_on_Effective_date</members>
+		<members>Create_MRAs_for_New_Accounts</members>
+		<members>Record_Trigger_Copy_pricing_fields_on_MRA_record_from_MR_record_on_Effective_dat</members>
+		<name>Flow</name>
+	</types>
+	<types>
+		<members>Copy_pricing_fields_on_MRA_record_from_MR_record_on_Effective_date</members>
+		<members>Create_MRAs_for_New_Accounts</members>
+		<members>Record_Trigger_Copy_pricing_fields_on_MRA_record_from_MR_record_on_Effective_dat</members>
+		<name>FlowDefinition</name>
+	</types>
+	<version>67.0</version>
+</Package>
