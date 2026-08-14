@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Kai_Onboarding__c</fullName>
+    <defaultValue>false</defaultValue>
+    <description>Indicates that this Contact was created through the Kai onboarding portal. Set to true when the payload includes onboard-type: kai.</description>
+    <label>Kai Onboarding</label>
+    <trackFeedHistory>false</trackFeedHistory>
+    <trackHistory>false</trackHistory>
+    <type>Checkbox</type>
+</CustomField>

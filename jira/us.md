@@ -16,12 +16,13 @@ Last Name (also Account POC)
 Phone
 Mobile Phone
 Email (also Company Email)
-
+* new fields   
+Kai_User_ID__c (External id unique)
 
 Address
 Address Id
 Street
-Country me haces sentir así
+Country
 City 
 State
 Postal Code
@@ -33,8 +34,5 @@ open questions:
 
 
 Contact Role
-
-
 Company User Type
-
 Account Owner
