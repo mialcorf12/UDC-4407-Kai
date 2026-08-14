@@ -1,7 +1,7 @@
 /**
- * UdcOnboardingService
+ * KaiOnboardingService
  *
- * Apex REST endpoint for uDesign Cloud onboarding portal.
+ * Apex REST endpoint for Kai onboarding portal.
  * Accepts a POST payload containing organization and contact data,
  * validates inputs, and atomically creates a Salesforce Account and
  * linked Contact. Uses a Savepoint to guarantee rollback if Contact
@@ -17,8 +17,8 @@
  *
  * API Version: 66.0
  */
-@RestResource(urlMapping='/UdcOnboardingService/*')
-global with sharing class UdcOnboardingService {
+@RestResource(urlMapping='/KaiOnboardingService/*')
+global with sharing class KaiOnboardingService {
 
     // -------------------------------------------------------------------------
     // @TestVisible flag: set to true in a test to force Contact DML failure.
@@ -62,31 +62,13 @@ global with sharing class UdcOnboardingService {
      * Note: onboard_type uses underscore (Apex identifiers cannot contain hyphens).
      */
     global class OnboardingRequest {
-        public String org_id;
-        public String org_sfdc_id;
-        public String onboard_type;
-        public String is_parent;
+        public String org_id; // uLab Acct Number | kai Acct Number
+        public String org_sfdc_id; // for update branch
+        public String onboard_type; // udesign.cloud | kai
         public String org_name;
-        public String org_type;
-        public String org_status;
-        public String shipping_address_id;
-        public String shipping_address_1;
-        public String shipping_city;
-        public String shipping_country;
-        public String shipping_region;
-        public String shipping_zip;
-        public String phone;
-        public String billing_address_id;
-        public String billing_address_1;
-        public String billing_city;
-        public String billing_country;
-        public String billing_region;
-        public String billing_zip;
+        public String org_type; // Orthodontic Practice | Clinical practice, Dental lab or Manufacturing
+        public String org_status; // uLab Account | kai Account
         public String license_number;
-        public String signature_required;
-        public String out_of_service_area;
-        public String tou_accepted_flag;
-        public String tou_updated_ts;
         public ContactRequest user;
     }
 
@@ -94,15 +76,14 @@ global with sharing class UdcOnboardingService {
      * Nested contact/user wrapper inside the root request.
      */
     global class ContactRequest {
-        public String user_id;
+        public String user_id; // Portal_User_ID__c | Kai_User_ID__c
         public String first_name;
         public String last_name;
         public String email;
         public String phone;
         public String cell_phone;
-        public String user_type;
-        public String role;
-        public String mailing_address_id;
+        public String user_type; // Account Owner
+        public String role; // Orthodontist
         public String mailing_address_1;
         public String mailing_city;
         public String mailing_country;
@@ -120,6 +101,7 @@ global with sharing class UdcOnboardingService {
         public Boolean success;
         public String message;
         public String errorCode;
+        public String onboard_type;  // udesign.cloud | kai // Alberto ++ add source field - onboard_type
         public Id accountId;
         public Id contactId;
     }
@@ -138,7 +120,7 @@ global with sharing class UdcOnboardingService {
     // =========================================================================
 
     /**
-     * Handles POST requests to /services/apexrest/UdcOnboardingService/
+     * Handles POST requests to /services/apexrest/KaiOnboardingService/
      *
      * Flow — Branch A (org_sfdc_id blank/null): create new Account + Contact
      *   1. Deserialize JSON body
@@ -162,6 +144,7 @@ global with sharing class UdcOnboardingService {
     @HttpPost
     global static OnboardingResponse handlePost() {
         RestResponse res = RestContext.response;
+        String onboard_type;
         String orgId;
         String userId;
 
@@ -173,6 +156,7 @@ global with sharing class UdcOnboardingService {
             );
             orgId  = req.org_id;
             userId = (req.user != null) ? req.user.user_id : null;
+            onboard_type = req.onboard_type;
 
             // Step 2: Resolve RecordType IDs dynamically (portable across orgs)
             Id accountRecordTypeId = Schema.SObjectType.Account
@@ -185,8 +169,8 @@ global with sharing class UdcOnboardingService {
                 .get('Commercial')
                 .getRecordTypeId();
 
-            // Compute the UDC onboarding flag once — used on both Account and Contact
-            Boolean isUdcOnboarding = (req.onboard_type == 'udesign.cloud');
+            // Compute the Kai onboarding flag once — used on both Account and Contact
+            Boolean isKaiOnboarding = (req.onboard_type == 'kai');
 
             // =====================================================================
             // BRANCH DECISION: org_sfdc_id present → update existing Account
@@ -202,12 +186,12 @@ global with sharing class UdcOnboardingService {
                     errResp.errorCode = 'INVALID_INPUT';
                     errResp.message   = 'Validation failed: ' + validationError;
                     // REQ-PE-2: publish FAILED event on 400 — no Account exists yet; accountId=null
-                    publishFailedEvent(null, orgId, userId,
+                    publishFailedEvent(null, orgId, userId, onboard_type,
                         res.statusCode, errResp.errorCode, errResp.message);
                     return errResp;
                 }
 
-                return handleExistingAccount(req, res, contactRecordTypeId, isUdcOnboarding);
+                return handleExistingAccount(req, res, contactRecordTypeId, isKaiOnboarding);
             } else {
                 // Step 3: Validate inputs before any DML — yields HTTP 400 on failure
                 String validationError = validateInput(req, 'A');
@@ -218,12 +202,12 @@ global with sharing class UdcOnboardingService {
                     errResp.errorCode = 'INVALID_INPUT';
                     errResp.message   = 'Validation failed: ' + validationError;
                     // REQ-PE-2: publish FAILED event on 400 — no Account exists yet; accountId=null
-                    publishFailedEvent(null, orgId, userId,
+                    publishFailedEvent(null, orgId, userId, onboard_type,
                         res.statusCode, errResp.errorCode, errResp.message);
                     return errResp;
                 }
 
-                return handleNewAccount(req, res, accountRecordTypeId, contactRecordTypeId, isUdcOnboarding);
+                return handleNewAccount(req, res, accountRecordTypeId, contactRecordTypeId, isKaiOnboarding);
             }
         } catch (Exception e) {
             // Safety net for unexpected failures before/outside the controlled DML paths
@@ -234,7 +218,7 @@ global with sharing class UdcOnboardingService {
             errResp.success   = false;
             errResp.errorCode = 'INTERNAL_ERROR';
             errResp.message   = 'Unexpected error: ' + e.getMessage();
-            publishFailedEvent(null, orgId, userId, res.statusCode, errResp.errorCode, errResp.message);
+            publishFailedEvent(null, orgId, userId, onboard_type, res.statusCode, errResp.errorCode, errResp.message);
             return errResp;
         }
     }
@@ -253,22 +237,23 @@ global with sharing class UdcOnboardingService {
         RestResponse res,
         Id accountRecordTypeId,
         Id contactRecordTypeId,
-        Boolean isUdcOnboarding
+        Boolean isKaiOnboarding
     ) {
-        // Capture uDC identifiers before any DML/savepoint (AD-3: survives rollback)
+        // Capture Kai identifiers before any DML/savepoint (AD-3: survives rollback)
         String orgId  = req.org_id;
         String userId = (req.user != null) ? req.user.user_id : null;
+        String onboard_type = req.onboard_type;
 
         // Build the Account record from payload
         Account acc = new Account();
         acc.RecordTypeId = accountRecordTypeId;
-        applyAccountFields(acc, req, isUdcOnboarding);
+        applyAccountFields(acc, req, isKaiOnboarding);
 
         // Set savepoint before first DML to enable atomic rollback
         Savepoint sp = Database.setSavepoint();
 
         // FLS enforcement on Account, then insert.
-        // UDC_Onboarding__c is a system-set flag — reapplied after FLS strip
+        // Kai_Onboarding__c is a system-set flag — reapplied after FLS strip
         // because stripInaccessible may remove it if the running user's profile
         // restricts the field. The endpoint always controls this flag; it cannot
         // be injected by the caller.
@@ -277,10 +262,10 @@ global with sharing class UdcOnboardingService {
             new List<SObject>{ acc }
         );
         Account accToInsert = (Account) accDecision.getRecords()[0];
-        accToInsert.UDC_Onboarding__c    = isUdcOnboarding;
-        // uLab_Acct_Number__c skipped in test context (same guard as applyAccountFields).
+        accToInsert.Kai_Onboarding__c    = isKaiOnboarding;
+        // Kai_Acct_Number__c skipped in test context (same guard as applyAccountFields).
         if (!Test.isRunningTest()) {
-            accToInsert.uLab_Acct_Number__c = acc.uLab_Acct_Number__c;
+            accToInsert.Kai_Acct_Number__c = acc.Kai_Acct_Number__c;
         }
 
         try {
@@ -297,13 +282,13 @@ global with sharing class UdcOnboardingService {
         } catch (DmlException e) {
             // Account insert failed — no records written; no rollback needed.
             OnboardingResponse errResp = buildDmlErrorResponse(e, res, null);
-            publishFailedEvent(null, orgId, userId, res.statusCode, errResp.errorCode, errResp.message);
+            publishFailedEvent(null, orgId, userId, onboard_type, res.statusCode, errResp.errorCode, errResp.message);
             return errResp;
         }
 
         // Build and insert Contact linked to the new Account
-        Contact conToInsert = buildContact(req, accToInsert.Id, contactRecordTypeId, isUdcOnboarding);
-        return insertContact(conToInsert, sp, res, accToInsert.Id, 'Account and Contact created successfully.', orgId, userId);
+        Contact conToInsert = buildContact(req, accToInsert.Id, contactRecordTypeId, isKaiOnboarding);
+        return insertContact(conToInsert, sp, res, accToInsert.Id, 'Account and Contact created successfully.', orgId, userId, onboard_type);
     }
 
     // =========================================================================
@@ -319,17 +304,17 @@ global with sharing class UdcOnboardingService {
         OnboardingRequest req,
         RestResponse res,
         Id contactRecordTypeId,
-        Boolean isUdcOnboarding
+        Boolean isKaiOnboarding
     ) {
-        // Capture uDC identifiers before any DML/savepoint (AD-3: survives rollback)
+        // Capture Kai identifiers before any DML/savepoint (AD-3: survives rollback)
         String orgId  = req.org_id;
         String userId = (req.user != null) ? req.user.user_id : null;
+        String onboard_type = req.onboard_type;
 
         // SOQL lookup — never create an Account in this branch
         List<Account> existing = [
             SELECT Id, RecordTypeId, Name, Type, Account_Status__c, Phone,
-                   Is_Parent__c, Signature_Required__c, Out_of_Service_Area__c,
-                   UDC_Onboarding__c, Account_Email__c, Account_POC__c,
+                   Kai_Onboarding__c, Account_Email__c, Account_POC__c,
                    ShippingAddressID__c, ShippingStreet, ShippingCity, ShippingCountry, ShippingState, ShippingPostalCode,
                    BillingAddressID__c, BillingStreet, BillingCity, BillingCountry, BillingState, BillingPostalCode
             FROM Account
@@ -344,29 +329,29 @@ global with sharing class UdcOnboardingService {
             errResp.errorCode = 'ACCOUNT_NOT_FOUND';
             errResp.message   = 'Account ' + req.org_sfdc_id + ' not found in Salesforce.';
             // REQ-PE-3: publish FAILED event on 404 — Account not found; accountId=null
-            publishFailedEvent(null, orgId, userId, res.statusCode, errResp.errorCode, errResp.message);
+            publishFailedEvent(null, orgId, userId, onboard_type, res.statusCode, errResp.errorCode, errResp.message);
             return errResp;
         }
 
         // Apply payload values onto the retrieved Account record.
         // Uses partial merge: blank payload fields preserve existing Account values.
         Account acc = existing[0];
-        applyAccountFieldsPartial(acc, req, isUdcOnboarding);
+        applyAccountFieldsPartial(acc, req, isKaiOnboarding);
 
         // Set savepoint before DML to cover update + Contact insert atomically
         Savepoint sp = Database.setSavepoint();
 
         // FLS enforcement on Account update.
-        // UDC_Onboarding__c reapplied after strip for the same reason as Branch A.
+        // Kai_Onboarding__c reapplied after strip for the same reason as Branch A.
         SObjectAccessDecision accDecision = Security.stripInaccessible(
             AccessType.UPDATABLE,
             new List<SObject>{ acc }
         );
         Account accToUpdate = (Account) accDecision.getRecords()[0];
-        accToUpdate.UDC_Onboarding__c    = isUdcOnboarding;
-        // uLab_Acct_Number__c skipped in test context (same guard as applyAccountFieldsPartial).
+        accToUpdate.Kai_Onboarding__c    = isKaiOnboarding;
+        // Kai_Acct_Number__c skipped in test context (same guard as applyAccountFieldsPartial).
         if (!Test.isRunningTest()) {
-            accToUpdate.uLab_Acct_Number__c = acc.uLab_Acct_Number__c;
+            accToUpdate.Kai_Acct_Number__c = acc.Kai_Acct_Number__c;
         }
 
         try {
@@ -381,13 +366,13 @@ global with sharing class UdcOnboardingService {
         } catch (DmlException e) {
             // Account update failed — buildDmlErrorResponse rolls back sp before returning.
             OnboardingResponse errResp = buildDmlErrorResponse(e, res, sp);
-            publishFailedEvent(accToUpdate.Id, orgId, userId, res.statusCode, errResp.errorCode, errResp.message);
+            publishFailedEvent(accToUpdate.Id, orgId, userId, onboard_type, res.statusCode, errResp.errorCode, errResp.message);
             return errResp;
         }
 
         // Build and insert Contact linked to the existing Account
-        Contact conToInsert = buildContact(req, accToUpdate.Id, contactRecordTypeId, isUdcOnboarding);
-        return insertContact(conToInsert, sp, res, accToUpdate.Id, 'Account updated and Contact created successfully.', orgId, userId);
+        Contact conToInsert = buildContact(req, accToUpdate.Id, contactRecordTypeId, isKaiOnboarding);
+        return insertContact(conToInsert, sp, res, accToUpdate.Id, 'Account updated and Contact created successfully.', orgId, userId, onboard_type);
     }
 
     // =========================================================================
@@ -402,56 +387,41 @@ global with sharing class UdcOnboardingService {
      *
      * @param acc              The Account sObject to populate (mutated in place)
      * @param req              The deserialized request payload
-     * @param isUdcOnboarding  Pre-computed UDC flag value
+     * @param isKaiOnboarding  Pre-computed Kai flag value
      */
-    private static void applyAccountFields(Account acc, OnboardingRequest req, Boolean isUdcOnboarding) {
+    private static void applyAccountFields(Account acc, OnboardingRequest req, Boolean isKaiOnboarding) {
         acc.Name              = req.org_name;
         acc.Type              = req.org_type;
         acc.Account_Status__c = req.org_status;
-        acc.Phone             = req.phone;
+        acc.Phone             = req.user.phone;
 
-        // String → Boolean coercion: payload sends "true"/"false" as strings
-        acc.Is_Parent__c           = (req.is_parent           == 'true');
-        acc.Signature_Required__c  = (req.signature_required  == 'true');
-        acc.Out_of_Service_Area__c = (req.out_of_service_area == 'true');
-
-        // UDC flag set by endpoint logic (not by caller)
-        acc.UDC_Onboarding__c = isUdcOnboarding;
+        // Kai flag set by endpoint logic (not by caller)
+        acc.Kai_Onboarding__c = isKaiOnboarding;
 
         // Shipping address
-        acc.ShippingAddressID__c = req.shipping_address_id;
-        acc.ShippingStreet       = req.shipping_address_1;
-        acc.ShippingCity         = req.shipping_city;
-        acc.ShippingCountry      = req.shipping_country;
-        acc.ShippingState        = req.shipping_region;
-        acc.ShippingPostalCode   = req.shipping_zip;
+        acc.ShippingStreet       = req.user.mailing_address_1;
+        acc.ShippingCity         = req.user.mailing_city;
+        acc.ShippingCountry      = req.user.mailing_country;
+        acc.ShippingState        = req.user.mailing_state;
+        acc.ShippingPostalCode   = req.user.mailing_zipcode;
 
         // Billing address
-        acc.BillingAddressID__c = req.billing_address_id;
-        acc.BillingStreet       = req.billing_address_1;
-        acc.BillingCity         = req.billing_city;
-        acc.BillingCountry      = req.billing_country;
-        acc.BillingState        = req.billing_region;
-        acc.BillingPostalCode   = req.billing_zip;
+        acc.BillingStreet       = req.user.mailing_address_1;
+        acc.BillingCity         = req.user.mailing_city;
+        acc.BillingCountry      = req.user.mailing_country;
+        acc.BillingState        = req.user.mailing_state;
+        acc.BillingPostalCode   = req.user.mailing_zipcode;
 
         acc.License_Number__c = req.license_number;
-        acc.Signed_Agreement__c = (req.tou_accepted_flag == 'true');
-        acc.Latest_SW_Agreement_Signed__c = String.isBlank(req.tou_updated_ts)
-            ? null
-            : Date.valueOf(req.tou_updated_ts);
-
-        // Additional fields requested in UDC-4114
-        acc.Cloud_Customer__c = true;
-        acc.Cloud_Assignment__c = Date.today();
-        acc.Date_Added_to_Portal__c = Date.today();
+        acc.Date_Added_to_Kai__c = Date.today();
         acc.Account_Email__c = req.user.email;
         acc.Account_POC__c = req.user.last_name;
 
-        // uLab_Acct_Number__c is skipped in test context: the "NFA Create" workflow
+        // Kai_Acct_Number__c is skipped in test context: the "NFA Create" workflow
         // fires when this field is set and references a cross-reference record that is
         // inaccessible in SeeAllData=false test isolation. Production behavior is unchanged.
         if (!Test.isRunningTest()) {
-            acc.uLab_Acct_Number__c = String.isBlank(req.org_id) ? null : Decimal.valueOf(req.org_id);
+            acc.Kai_Acct_Number__c = String.isBlank(req.org_id) ? null : Decimal.valueOf(req.org_id);
         }
     }
 
@@ -463,48 +433,34 @@ global with sharing class UdcOnboardingService {
      *
      * @param acc              The existing Account sObject to update (mutated in place)
      * @param req              The deserialized request payload
-     * @param isUdcOnboarding  Pre-computed UDC flag value
+     * @param isKaiOnboarding  Pre-computed Kai flag value
      */
-    private static void applyAccountFieldsPartial(Account acc, OnboardingRequest req, Boolean isUdcOnboarding) {
+    private static void applyAccountFieldsPartial(Account acc, OnboardingRequest req, Boolean isKaiOnboarding) {
         if (String.isNotBlank(req.org_name))   { acc.Name = req.org_name; }
         if (String.isNotBlank(req.org_type))   { acc.Type              = req.org_type; }
         if (String.isNotBlank(req.org_status)) { acc.Account_Status__c = req.org_status; }
-        if (String.isNotBlank(req.phone))      { acc.Phone             = req.phone; }
+        if (String.isNotBlank(req.user.phone))      { acc.Phone             = req.user.phone; }
 
-        // String → Boolean coercion: only touch the flag when the payload sent it explicitly
-        if (String.isNotBlank(req.is_parent))           { acc.Is_Parent__c           = (req.is_parent           == 'true'); }
-        if (String.isNotBlank(req.signature_required))  { acc.Signature_Required__c  = (req.signature_required  == 'true'); }
-        if (String.isNotBlank(req.out_of_service_area)) { acc.Out_of_Service_Area__c = (req.out_of_service_area == 'true'); }
-
-        // UDC flag set by endpoint logic (not by caller) — always applied, like Branch A
-        acc.UDC_Onboarding__c = isUdcOnboarding;
+        // Kai flag set by endpoint logic (not by caller) — always applied, like Branch A
+        acc.Kai_Onboarding__c = isKaiOnboarding;
 
         // Shipping address
-        if (String.isNotBlank(req.shipping_address_id)) { acc.ShippingAddressID__c = req.shipping_address_id; }
-        if (String.isNotBlank(req.shipping_address_1))  { acc.ShippingStreet       = req.shipping_address_1; }
-        if (String.isNotBlank(req.shipping_city))       { acc.ShippingCity         = req.shipping_city; }
-        if (String.isNotBlank(req.shipping_country))    { acc.ShippingCountry      = req.shipping_country; }
-        if (String.isNotBlank(req.shipping_region))     { acc.ShippingState        = req.shipping_region; }
-        if (String.isNotBlank(req.shipping_zip))        { acc.ShippingPostalCode   = req.shipping_zip; }
+        if (String.isNotBlank(req.user.mailing_address_1))  { acc.ShippingStreet       = req.user.mailing_address_1; }
+        if (String.isNotBlank(req.user.mailing_city))       { acc.ShippingCity         = req.user.mailing_city; }
+        if (String.isNotBlank(req.user.mailing_country))    { acc.ShippingCountry      = req.user.mailing_country; }
+        if (String.isNotBlank(req.user.mailing_state))      { acc.ShippingState        = req.user.mailing_state; }
+        if (String.isNotBlank(req.user.mailing_zipcode))    { acc.ShippingPostalCode   = req.user.mailing_zipcode; }
 
         // Billing address
-        if (String.isNotBlank(req.billing_address_id)) { acc.BillingAddressID__c = req.billing_address_id; }
-        if (String.isNotBlank(req.billing_address_1))  { acc.BillingStreet       = req.billing_address_1; }
-        if (String.isNotBlank(req.billing_city))       { acc.BillingCity         = req.billing_city; }
-        if (String.isNotBlank(req.billing_country))    { acc.BillingCountry      = req.billing_country; }
-        if (String.isNotBlank(req.billing_region))     { acc.BillingState        = req.billing_region; }
-        if (String.isNotBlank(req.billing_zip))        { acc.BillingPostalCode   = req.billing_zip; }
+        if (String.isNotBlank(req.user.mailing_address_1))  { acc.BillingStreet       = req.user.mailing_address_1; }
+        if (String.isNotBlank(req.user.mailing_city))       { acc.BillingCity         = req.user.mailing_city; }
+        if (String.isNotBlank(req.user.mailing_country))    { acc.BillingCountry      = req.user.mailing_country; }
+        if (String.isNotBlank(req.user.mailing_state))      { acc.BillingState        = req.user.mailing_state; }
+        if (String.isNotBlank(req.user.mailing_zipcode))    { acc.BillingPostalCode   = req.user.mailing_zipcode; }
 
         if (String.isNotBlank(req.license_number)) { acc.License_Number__c = req.license_number; }
-        if (String.isNotBlank(req.tou_accepted_flag)) { acc.Signed_Agreement__c = (req.tou_accepted_flag == 'true'); }
-        if (String.isNotBlank(req.tou_updated_ts)) {
-            acc.Latest_SW_Agreement_Signed__c = Date.valueOf(req.tou_updated_ts);
-        }
 
-        // Additional fields requested in UDC-4114
-        acc.Cloud_Customer__c = true;
-        acc.Cloud_Assignment__c = Date.today();
-        acc.Date_Added_to_Portal__c = Date.today();
+        acc.Date_Added_to_Kai__c = Date.today();
         if (String.isBlank(acc.Account_Email__c)) {
             acc.Account_Email__c = req.user.email;
         }
@@ -512,9 +468,9 @@ global with sharing class UdcOnboardingService {
             acc.Account_POC__c = req.user.last_name;
         }
 
-        // uLab_Acct_Number__c skipped in test context (same guard as applyAccountFields).
+        // Kai_Acct_Number__c skipped in test context (same guard as applyAccountFields).
         if (!Test.isRunningTest() && String.isNotBlank(req.org_id)) {
-            acc.uLab_Acct_Number__c = Decimal.valueOf(req.org_id);
+            acc.Kai_Acct_Number__c = Decimal.valueOf(req.org_id);
         }
     }
 
@@ -525,14 +481,14 @@ global with sharing class UdcOnboardingService {
      * @param req               The deserialized request payload
      * @param accountId         The Account Id to link the Contact to
      * @param contactRecordTypeId  Resolved RecordType Id for Contact
-     * @param isUdcOnboarding   Pre-computed UDC flag value
+     * @param isKaiOnboarding   Pre-computed Kai flag value
      * @return                  A populated (not yet inserted) Contact
      */
     private static Contact buildContact(
         OnboardingRequest req,
         Id accountId,
         Id contactRecordTypeId,
-        Boolean isUdcOnboarding
+        Boolean isKaiOnboarding
     ) {
         Contact con = new Contact();
         con.RecordTypeId = contactRecordTypeId;
@@ -551,23 +507,16 @@ global with sharing class UdcOnboardingService {
         }
 
         con.Contact_Role__c   = req.user.role;
-        con.Portal_User_ID__c = req.user.user_id;
-        con.Activation_URL__c = req.user.activation_url;
-        con.UDC_Onboarding__c = isUdcOnboarding;
+        con.Kai_User_ID__c = req.user.user_id;
+        con.Kai_Activation_URL__c = req.user.activation_url;
+        con.Kai_Onboarding__c = isKaiOnboarding;
 
         // Mailing address
-        con.Mailing_Address_ID__c = req.user.mailing_address_id;
         con.MailingStreet         = req.user.mailing_address_1;
         con.MailingCity       = req.user.mailing_city;
         con.MailingCountry    = req.user.mailing_country;
         con.MailingState      = req.user.mailing_state;
         con.MailingPostalCode = req.user.mailing_zipcode;
-
-        // Additional fields requested in UDC-4114
-        if (String.isNotBlank(req.tou_accepted_flag)) { con.uLab_Systems_Account_Agreement_Signed__c = (req.tou_accepted_flag == 'true'); }
-        if (String.isNotBlank(req.tou_updated_ts)) {
-            con.Sales_Informed_Agreement_Signed__c = Date.valueOf(req.tou_updated_ts);
-        }
 
         return con;
     }
@@ -584,8 +533,8 @@ global with sharing class UdcOnboardingService {
      * @param res         The RestResponse to set statusCode on
      * @param accountId   The Account Id — included in the success response
      * @param successMsg  The message string to return on HTTP 201
-     * @param orgId       uDC org identifier from request.org_id (may be null)
-     * @param userId      uDC portal user identifier from request.user.user_id (may be null)
+     * @param orgId       Kai org identifier from request.org_id (may be null)
+     * @param userId      Kai portal user identifier from request.user.user_id (may be null)
      * @return            A populated OnboardingResponse
      */
     private static OnboardingResponse insertContact(
@@ -595,21 +544,19 @@ global with sharing class UdcOnboardingService {
         Id accountId,
         String successMsg,
         String orgId,
-        String userId
+        String userId, 
+        String onboard_type
     ) {
         // FLS enforcement on Contact.
-        // UDC_Onboarding__c reapplied after strip — same rationale as Account.
+        // Kai_Onboarding__c reapplied after strip — same rationale as Account.
         SObjectAccessDecision conDecision = Security.stripInaccessible(
             AccessType.CREATABLE,
             new List<SObject>{ con }
         );
         Contact conToInsert = (Contact) conDecision.getRecords()[0];
-        conToInsert.UDC_Onboarding__c    = con.UDC_Onboarding__c;
-        conToInsert.Portal_User_ID__c    = con.Portal_User_ID__c;
-        conToInsert.uLab_Systems_Account_Agreement_Signed__c = con.uLab_Systems_Account_Agreement_Signed__c;
-        conToInsert.Sales_Informed_Agreement_Signed__c       = con.Sales_Informed_Agreement_Signed__c;
-        conToInsert.Activation_URL__c    = con.Activation_URL__c;
-        conToInsert.Mailing_Address_ID__c = con.Mailing_Address_ID__c;
+        conToInsert.Kai_Onboarding__c    = con.Kai_Onboarding__c;
+        conToInsert.Kai_User_ID__c    = con.Kai_User_ID__c;
+        conToInsert.Kai_Activation_URL__c    = con.Kai_Activation_URL__c;
 
         try {
             // @TestVisible bypass: forces a controlled failure to test rollback
@@ -631,7 +578,7 @@ global with sharing class UdcOnboardingService {
             // same statusCode/errorCode/message actually returned to the caller.
             // accountId is the Account already committed; Contact failed → pass accountId to event.
             OnboardingResponse errResp = buildDmlErrorResponse(e, res, sp);
-            publishFailedEvent(accountId, orgId, userId, res.statusCode, errResp.errorCode, errResp.message);
+            publishFailedEvent(accountId, orgId, userId, onboard_type, res.statusCode, errResp.errorCode, errResp.message);
             return errResp;
         } catch (ContactInsertException e) {
             // Test-only forced failure — rolls back to verify atomicity.
@@ -643,7 +590,7 @@ global with sharing class UdcOnboardingService {
             errResp.message   = 'The transaction was rolled back. Original Salesforce error: '
                                 + e.getMessage();
             // accountId is the Account committed before the forced Contact failure.
-            publishFailedEvent(accountId, orgId, userId, res.statusCode, errResp.errorCode, errResp.message);
+            publishFailedEvent(accountId, orgId, userId, onboard_type, res.statusCode, errResp.errorCode, errResp.message);
             return errResp;
         }
 
@@ -654,7 +601,7 @@ global with sharing class UdcOnboardingService {
         successResp.accountId = accountId;
         successResp.contactId = conToInsert.Id;
         // REQ-PE-1: publish SUCCESS after both records are committed
-        publishSuccessEvent(accountId, orgId, conToInsert.Id, userId);
+        publishSuccessEvent(accountId, orgId, conToInsert.Id, userId, onboard_type);
         return successResp;
     }
 
@@ -696,17 +643,19 @@ global with sharing class UdcOnboardingService {
      * Publish failure is silently swallowed to prevent HTTP response interference.
      *
      * @param accountId  Salesforce Account record Id
-     * @param orgId      uDC org identifier (request.org_id — raw string, may be null)
+     * @param orgId      Kai org identifier (request.org_id — raw string, may be null)
      * @param contactId  Salesforce Contact record Id
-     * @param userId     uDC portal user identifier (request.user.user_id — may be null)
+     * @param userId     Kai portal user identifier (request.user.user_id — may be null)
+     * @param onboard_type  The type of onboarding process
      */
-    private static void publishSuccessEvent(Id accountId, String orgId, Id contactId, String userId) {
+    private static void publishSuccessEvent(Id accountId, String orgId, Id contactId, String userId, String onboard_type) {
         try {
             Sfdc_Accountuser_CreatedSuccess__e evt = new Sfdc_Accountuser_CreatedSuccess__e();
             evt.AcctCaseSafeID__c    = String.valueOf(accountId);
             evt.uLab_Acct_Number__c  = orgId;
             evt.ContactCaseSafeID__c = String.valueOf(contactId);
             evt.Portal_User_ID__c    = userId;
+            evt.OnboardType__c       = onboard_type;
             EventBus.publish(evt);
             // Capture for test assertions — EventBus.TestBroker.getPublishedMessages()
             // is not available in this org; @TestVisible capture lists are the alternative.
@@ -727,16 +676,18 @@ global with sharing class UdcOnboardingService {
      * Published with PUBLISH_IMMEDIATELY (default) — survives DML rollback.
      *
      * @param accountId     Salesforce Account record Id; null if no Account was committed
-     * @param orgId         uDC org identifier from request.org_id (may be null)
-     * @param userId        uDC portal user identifier from request.user.user_id (may be null)
+     * @param orgId         Kai org identifier from request.org_id (may be null)
+     * @param userId        Kai portal user identifier from request.user.user_id (may be null)
      * @param statusCode    HTTP status code set on RestResponse for this failure (mirrors res.statusCode)
      * @param errorCode     Machine-readable error code (mirrors OnboardingResponse.errorCode)
      * @param errorMessage  Human-readable error message (mirrors OnboardingResponse.message); truncated to 255 chars
+     * @param onboard_type  The type of onboarding process
      */
     private static void publishFailedEvent(
         Id accountId,
         String orgId,
         String userId,
+        String onboard_type,
         Integer statusCode,
         String errorCode,
         String errorMessage
@@ -746,11 +697,13 @@ global with sharing class UdcOnboardingService {
             evt.AcctCaseSafeID__c   = accountId != null ? String.valueOf(accountId) : null;
             evt.uLab_Acct_Number__c = orgId;
             evt.Portal_User_ID__c   = userId;
+            evt.OnboardType__c       = onboard_type;
             evt.Status_Code__c      = statusCode;
             evt.Error_Code__c       = errorCode;
             evt.Error_Message__c    = (errorMessage != null && errorMessage.length() > 255)
                 ? errorMessage.substring(0, 255)
                 : errorMessage;
+            
             // ContactCaseSafeID__c remains null — Contact was never committed on failure path
             EventBus.publish(evt);
             // Capture for test assertions — @TestVisible capture list alternative

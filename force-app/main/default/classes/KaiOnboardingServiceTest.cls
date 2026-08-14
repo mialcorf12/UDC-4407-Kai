@@ -1,13 +1,13 @@
 /**
- * UdcOnboardingServiceTest
+ * KaiOnboardingServiceTest
  *
- * Test class for UdcOnboardingService covering all 7 Gherkin scenarios
+ * Test class for KaiOnboardingService covering all 7 Gherkin scenarios
  * defined in the spec (REQ-1 through REQ-8).
  *
  * TDD Cycle: tests were written BEFORE implementation (RED phase).
  * Each test fails against the stub and passes after Phase 3 GREEN implementation.
  *
- * Test runner: sf apex run test -n UdcOnboardingServiceTest
+ * Test runner: sf apex run test -n KaiOnboardingServiceTest
  * API Version: 66.0
  *
  * Coverage note — HTTP 409 and 422:
@@ -16,7 +16,7 @@
  * integration testing against a sandbox org with active Duplicate Rules and Validation Rules.
  */
 @isTest(SeeAllData=false)
-private class UdcOnboardingServiceTest {
+private class KaiOnboardingServiceTest {
 
     // =========================================================================
     // Shared Test Data Constants
@@ -26,7 +26,7 @@ private class UdcOnboardingServiceTest {
     private static final String VALID_LAST_NAME     = 'Smith';
     private static final String VALID_EMAIL         = 'john.smith@example.com';
     private static final String ROLLBACK_ORG_NAME   = 'RollbackTest';
-    private static final String ONBOARD_TYPE_UDC    = 'udesign.cloud';
+    private static final String ONBOARD_TYPE_Kai    = 'udesign.cloud';
 
     // =========================================================================
     // RestContext Setup Helper
@@ -46,12 +46,12 @@ private class UdcOnboardingServiceTest {
         RestContext.response = new RestResponse();
         // Reset all @TestVisible flags and capture lists so each test starts clean.
         // EventBus.TestBroker.getPublishedMessages() is unavailable in this org edition;
-        // the @TestVisible static lists in UdcOnboardingService are the capture mechanism.
-        UdcOnboardingService.forceContactFailure          = false;
-        UdcOnboardingService.forceDirectDmlInTest          = false;
-        UdcOnboardingService.forceDmlStatusCodeOverride   = null;
-        UdcOnboardingService.capturedSuccessEvents = new List<Sfdc_Accountuser_CreatedSuccess__e>();
-        UdcOnboardingService.capturedFailedEvents  = new List<Sfdc_Accountuser_CreatedFailed__e>();
+        // the @TestVisible static lists in KaiOnboardingService are the capture mechanism.
+        KaiOnboardingService.forceContactFailure          = false;
+        KaiOnboardingService.forceDirectDmlInTest          = false;
+        KaiOnboardingService.forceDmlStatusCodeOverride   = null;
+        KaiOnboardingService.capturedSuccessEvents = new List<Sfdc_Accountuser_CreatedSuccess__e>();
+        KaiOnboardingService.capturedFailedEvents  = new List<Sfdc_Accountuser_CreatedFailed__e>();
     }
 
     // =========================================================================
@@ -145,7 +145,7 @@ private class UdcOnboardingServiceTest {
         setupRestContext(payload);
 
         Test.startTest();
-        UdcOnboardingService.OnboardingResponse resp = UdcOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
         Test.stopTest();
 
         System.assertEquals(400, RestContext.response.statusCode,
@@ -177,7 +177,7 @@ private class UdcOnboardingServiceTest {
         setupRestContext(payload);
 
         Test.startTest();
-        UdcOnboardingService.OnboardingResponse resp = UdcOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
         Test.stopTest();
 
         System.assertEquals(400, RestContext.response.statusCode,
@@ -205,7 +205,7 @@ private class UdcOnboardingServiceTest {
         setupRestContext(payload);
 
         Test.startTest();
-        UdcOnboardingService.OnboardingResponse resp = UdcOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
         Test.stopTest();
 
         System.assertEquals(400, RestContext.response.statusCode,
@@ -217,21 +217,21 @@ private class UdcOnboardingServiceTest {
     }
 
     // =========================================================================
-    // Scenario 4 — REQ-3/REQ-4/REQ-5: Success, UDC flag true
+    // Scenario 4 — REQ-3/REQ-4/REQ-5: Success, Kai flag true
     // =========================================================================
 
     /**
      * GIVEN a valid full payload with onboard_type = 'udesign.cloud'
      * WHEN POST is received
-     * THEN statusCode == 201, both records created, UDC_Onboarding__c == true on both
+     * THEN statusCode == 201, both records created, Kai_Onboarding__c == true on both
      */
     @isTest
-    static void testSuccessUdcFlagTrue() {
-        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_UDC, null);
+    static void testSuccessKaiFlagTrue() {
+        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_Kai, null);
         setupRestContext(payload);
 
         Test.startTest();
-        UdcOnboardingService.OnboardingResponse resp = UdcOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
         Test.stopTest();
 
         System.assertEquals(201, RestContext.response.statusCode,
@@ -243,9 +243,9 @@ private class UdcOnboardingServiceTest {
         System.assertNotEquals(null, resp.contactId,
             'Expected contactId to be populated on success');
 
-        // Verify Account persisted with UDC flag, address ID fields, and tou/agreement fields
+        // Verify Account persisted with Kai flag, address ID fields, and tou/agreement fields
         List<Account> accounts = [
-            SELECT Id, Name, UDC_Onboarding__c, uLab_Acct_Number__c,
+            SELECT Id, Name, Kai_Onboarding__c, uLab_Acct_Number__c,
                    ShippingAddressID__c, BillingAddressID__c,
                    Signed_Agreement__c, Latest_SW_Agreement_Signed__c
             FROM Account
@@ -253,8 +253,8 @@ private class UdcOnboardingServiceTest {
         ];
         System.assertEquals(1, accounts.size(),
             'Expected exactly 1 Account to be inserted');
-        System.assertEquals(true, accounts[0].UDC_Onboarding__c,
-            'Expected UDC_Onboarding__c = true on Account when onboard_type = udesign.cloud');
+        System.assertEquals(true, accounts[0].Kai_Onboarding__c,
+            'Expected Kai_Onboarding__c = true on Account when onboard_type = udesign.cloud');
         // uLab_Acct_Number__c is null in test context — skipped to avoid the "NFA Create"
         // workflow which references a cross-reference record inaccessible in SeeAllData=false.
         // Production behavior (uLab_Acct_Number__c = 12345) is validated via integration testing.
@@ -269,17 +269,17 @@ private class UdcOnboardingServiceTest {
         System.assertEquals(Date.newInstance(2026, 7, 3), accounts[0].Latest_SW_Agreement_Signed__c,
             'Expected Latest_SW_Agreement_Signed__c to be populated from tou_updated_ts');
 
-        // Verify Contact persisted with UDC flag and new fields linked to Account
+        // Verify Contact persisted with Kai flag and new fields linked to Account
         List<Contact> contacts = [
-            SELECT Id, AccountId, UDC_Onboarding__c, Portal_User_ID__c,
+            SELECT Id, AccountId, Kai_Onboarding__c, Portal_User_ID__c,
                    Mailing_Address_ID__c, Activation_URL__c
             FROM Contact
             WHERE Id = :resp.contactId
         ];
         System.assertEquals(1, contacts.size(),
             'Expected exactly 1 Contact to be inserted');
-        System.assertEquals(true, contacts[0].UDC_Onboarding__c,
-            'Expected UDC_Onboarding__c = true on Contact when onboard_type = udesign.cloud');
+        System.assertEquals(true, contacts[0].Kai_Onboarding__c,
+            'Expected Kai_Onboarding__c = true on Contact when onboard_type = udesign.cloud');
         System.assertEquals(resp.accountId, contacts[0].AccountId,
             'Expected Contact to be linked to the created Account');
         System.assertEquals('USR001', contacts[0].Portal_User_ID__c,
@@ -291,24 +291,24 @@ private class UdcOnboardingServiceTest {
     }
 
     // =========================================================================
-    // Scenario 5 — REQ-5: Success, UDC flag false (no onboard_type)
+    // Scenario 5 — REQ-5: Success, Kai flag false (no onboard_type)
     // =========================================================================
 
     /**
      * GIVEN a valid payload WITHOUT onboard_type
      * WHEN POST is received
-     * THEN statusCode == 201, UDC_Onboarding__c == false on both records
+     * THEN statusCode == 201, Kai_Onboarding__c == false on both records
      *
      * Triangulates Scenario 4: different onboard_type value → different flag outcome.
      */
     @isTest
-    static void testSuccessUdcFlagFalse() {
+    static void testSuccessKaiFlagFalse() {
         // null onboardType, null orgSfdcId → Branch A (create new Account)
         String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, null, null);
         setupRestContext(payload);
 
         Test.startTest();
-        UdcOnboardingService.OnboardingResponse resp = UdcOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
         Test.stopTest();
 
         System.assertEquals(201, RestContext.response.statusCode,
@@ -316,30 +316,30 @@ private class UdcOnboardingServiceTest {
         System.assertEquals(true, resp.success,
             'Expected success=true for valid payload');
 
-        // Verify UDC flag is false on Account
+        // Verify Kai flag is false on Account
         List<Account> accounts = [
-            SELECT Id, UDC_Onboarding__c, uLab_Acct_Number__c
+            SELECT Id, Kai_Onboarding__c, uLab_Acct_Number__c
             FROM Account
             WHERE Id = :resp.accountId
         ];
         System.assertEquals(1, accounts.size(),
             'Expected exactly 1 Account to be inserted');
-        System.assertEquals(false, accounts[0].UDC_Onboarding__c,
-            'Expected UDC_Onboarding__c = false on Account when onboard_type is absent');
+        System.assertEquals(false, accounts[0].Kai_Onboarding__c,
+            'Expected Kai_Onboarding__c = false on Account when onboard_type is absent');
         // uLab_Acct_Number__c is null in test context — skipped to avoid NFA Create workflow.
         System.assertEquals(null, accounts[0].uLab_Acct_Number__c,
             'uLab_Acct_Number__c is skipped in test context (NFA Create workflow guard)');
 
-        // Verify UDC flag is false on Contact
+        // Verify Kai flag is false on Contact
         List<Contact> contacts = [
-            SELECT Id, UDC_Onboarding__c, Portal_User_ID__c
+            SELECT Id, Kai_Onboarding__c, Portal_User_ID__c
             FROM Contact
             WHERE Id = :resp.contactId
         ];
         System.assertEquals(1, contacts.size(),
             'Expected exactly 1 Contact to be inserted');
-        System.assertEquals(false, contacts[0].UDC_Onboarding__c,
-            'Expected UDC_Onboarding__c = false on Contact when onboard_type is absent');
+        System.assertEquals(false, contacts[0].Kai_Onboarding__c,
+            'Expected Kai_Onboarding__c = false on Contact when onboard_type is absent');
         System.assertEquals('USR001', contacts[0].Portal_User_ID__c,
             'Expected Portal_User_ID__c to be populated from user_id');
     }
@@ -360,11 +360,11 @@ private class UdcOnboardingServiceTest {
         setupRestContext(payload);
 
         // Activate the @TestVisible flag to force Contact DML failure
-        UdcOnboardingService.forceContactFailure = true;
-        UdcOnboardingService.forceDirectDmlInTest = true;
+        KaiOnboardingService.forceContactFailure = true;
+        KaiOnboardingService.forceDirectDmlInTest = true;
 
         Test.startTest();
-        UdcOnboardingService.OnboardingResponse resp = UdcOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
         Test.stopTest();
 
         System.assertEquals(500, RestContext.response.statusCode,
@@ -403,10 +403,10 @@ private class UdcOnboardingServiceTest {
         setupRestContext(payload);
 
         // Activate the @TestVisible flag to force Account DML failure
-        UdcOnboardingService.forceDirectDmlInTest = true;
+        KaiOnboardingService.forceDirectDmlInTest = true;
 
         Test.startTest();
-        UdcOnboardingService.OnboardingResponse resp = UdcOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
         Test.stopTest();
 
         System.assertEquals(500, RestContext.response.statusCode,
@@ -442,7 +442,7 @@ private class UdcOnboardingServiceTest {
         setupRestContext(payload);
 
         Test.startTest();
-        UdcOnboardingService.OnboardingResponse resp = UdcOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
         Test.stopTest();
 
         System.assertEquals(404, RestContext.response.statusCode,
@@ -489,11 +489,11 @@ private class UdcOnboardingServiceTest {
         insert existing;
 
         // Build payload pointing to the existing Account's real Id
-        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_UDC, existing.Id);
+        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_Kai, existing.Id);
         setupRestContext(payload);
 
         Test.startTest();
-        UdcOnboardingService.OnboardingResponse resp = UdcOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
         Test.stopTest();
 
         System.assertEquals(201, RestContext.response.statusCode,
@@ -507,7 +507,7 @@ private class UdcOnboardingServiceTest {
 
         // Verify the Account was UPDATED (not a new one inserted) — only 1 Account with this Id
         List<Account> accounts = [
-            SELECT Id, Name, UDC_Onboarding__c, uLab_Acct_Number__c,
+            SELECT Id, Name, Kai_Onboarding__c, uLab_Acct_Number__c,
                    ShippingAddressID__c, BillingAddressID__c,
                    Signed_Agreement__c, Latest_SW_Agreement_Signed__c
             FROM Account
@@ -517,8 +517,8 @@ private class UdcOnboardingServiceTest {
             'Expected exactly 1 Account with the pre-existing Id');
         System.assertEquals(VALID_ORG_NAME, accounts[0].Name,
             'Expected Account Name to be updated to payload org_name');
-        System.assertEquals(true, accounts[0].UDC_Onboarding__c,
-            'Expected UDC_Onboarding__c = true on updated Account');
+        System.assertEquals(true, accounts[0].Kai_Onboarding__c,
+            'Expected Kai_Onboarding__c = true on updated Account');
         // uLab_Acct_Number__c is null in test context — skipped to avoid NFA Create workflow.
         System.assertEquals(null, accounts[0].uLab_Acct_Number__c,
             'uLab_Acct_Number__c is skipped in test context (NFA Create workflow guard)');
@@ -538,7 +538,7 @@ private class UdcOnboardingServiceTest {
 
         // Verify Contact is linked to the pre-existing Account with new fields populated
         List<Contact> contacts = [
-            SELECT Id, AccountId, UDC_Onboarding__c, LastName, Portal_User_ID__c,
+            SELECT Id, AccountId, Kai_Onboarding__c, LastName, Portal_User_ID__c,
                    Mailing_Address_ID__c, Activation_URL__c
             FROM Contact
             WHERE Id = :resp.contactId
@@ -547,8 +547,8 @@ private class UdcOnboardingServiceTest {
             'Expected exactly 1 Contact to be created');
         System.assertEquals(existing.Id, contacts[0].AccountId,
             'Expected Contact to be linked to the pre-existing Account');
-        System.assertEquals(true, contacts[0].UDC_Onboarding__c,
-            'Expected UDC_Onboarding__c = true on Contact');
+        System.assertEquals(true, contacts[0].Kai_Onboarding__c,
+            'Expected Kai_Onboarding__c = true on Contact');
         System.assertEquals(VALID_LAST_NAME, contacts[0].LastName,
             'Expected Contact LastName to match payload user.last_name');
         System.assertEquals('USR001', contacts[0].Portal_User_ID__c,
@@ -578,12 +578,12 @@ private class UdcOnboardingServiceTest {
         String payload = buildPayload(longName, VALID_LAST_NAME, VALID_EMAIL, null, null);
         setupRestContext(payload);
 
-        UdcOnboardingService.forceDmlStatusCodeOverride = StatusCode.DUPLICATE_VALUE;
+        KaiOnboardingService.forceDmlStatusCodeOverride = StatusCode.DUPLICATE_VALUE;
         // Activate the @TestVisible flag to force Account DML failure
-        UdcOnboardingService.forceDirectDmlInTest = true;
+        KaiOnboardingService.forceDirectDmlInTest = true;
 
         Test.startTest();
-        UdcOnboardingService.OnboardingResponse resp = UdcOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
         Test.stopTest();
 
         System.assertEquals(409, RestContext.response.statusCode,
@@ -628,7 +628,7 @@ private class UdcOnboardingServiceTest {
         setupRestContext('{ this is not valid json');
 
         Test.startTest();
-        UdcOnboardingService.OnboardingResponse resp = UdcOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
         Test.stopTest();
 
         System.assertEquals(500, RestContext.response.statusCode,
@@ -673,13 +673,13 @@ private class UdcOnboardingServiceTest {
         String payload = buildPayload(longName, VALID_LAST_NAME, VALID_EMAIL, null, null);
         setupRestContext(payload);
 
-        UdcOnboardingService.forceDmlStatusCodeOverride = StatusCode.FIELD_CUSTOM_VALIDATION_EXCEPTION;
+        KaiOnboardingService.forceDmlStatusCodeOverride = StatusCode.FIELD_CUSTOM_VALIDATION_EXCEPTION;
 
         // Activate the @TestVisible flag to force DML failure
-        UdcOnboardingService.forceDirectDmlInTest = true;
+        KaiOnboardingService.forceDirectDmlInTest = true;
 
         Test.startTest();
-        UdcOnboardingService.OnboardingResponse resp = UdcOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
         Test.stopTest();
 
         System.assertEquals(422, RestContext.response.statusCode,
@@ -698,28 +698,28 @@ private class UdcOnboardingServiceTest {
 
     /**
      * Retrieves published success events captured during the test via
-     * UdcOnboardingService.capturedSuccessEvents — a @TestVisible static list.
+     * KaiOnboardingService.capturedSuccessEvents — a @TestVisible static list.
      *
      * Note: EventBus.TestBroker.getPublishedMessages() is not available in this
      * org's edition. The @TestVisible capture-list pattern is used instead:
-     * UdcOnboardingService.publishSuccessEvent() appends to capturedSuccessEvents
+     * KaiOnboardingService.publishSuccessEvent() appends to capturedSuccessEvents
      * inside a Test.isRunningTest() guard whenever EventBus.publish() succeeds.
      */
     private static List<Sfdc_Accountuser_CreatedSuccess__e> getPublishedSuccessEvents() {
-        return UdcOnboardingService.capturedSuccessEvents;
+        return KaiOnboardingService.capturedSuccessEvents;
     }
 
     /**
      * Retrieves published failed events captured during the test via
-     * UdcOnboardingService.capturedFailedEvents — a @TestVisible static list.
+     * KaiOnboardingService.capturedFailedEvents — a @TestVisible static list.
      *
      * Same rationale as getPublishedSuccessEvents() above.
      */
     private static List<Sfdc_Accountuser_CreatedFailed__e> getPublishedFailedEvents() {
         // Activate the @TestVisible flag to force DML failure
-        UdcOnboardingService.forceDirectDmlInTest = true;
+        KaiOnboardingService.forceDirectDmlInTest = true;
         
-        return UdcOnboardingService.capturedFailedEvents;
+        return KaiOnboardingService.capturedFailedEvents;
     }
 
     // =========================================================================
@@ -741,12 +741,12 @@ private class UdcOnboardingServiceTest {
     @isTest
     static void test_PublishSuccessEvent_BranchA() {
         // Given — valid payload, Branch A (no org_sfdc_id)
-        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_UDC, null);
+        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_Kai, null);
         setupRestContext(payload);
 
         // When
         Test.startTest();
-        UdcOnboardingService.OnboardingResponse resp = UdcOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
         Test.stopTest();
 
         // Then — HTTP assertions
@@ -805,12 +805,12 @@ private class UdcOnboardingServiceTest {
         );
         insert existing;
 
-        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_UDC, existing.Id);
+        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_Kai, existing.Id);
         setupRestContext(payload);
 
         // When
         Test.startTest();
-        UdcOnboardingService.OnboardingResponse resp = UdcOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
         Test.stopTest();
 
         // Then — HTTP assertions
@@ -897,7 +897,7 @@ private class UdcOnboardingServiceTest {
 
         // When
         Test.startTest();
-        UdcOnboardingService.OnboardingResponse resp = UdcOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
         Test.stopTest();
 
         // Then — HTTP assertions
@@ -996,13 +996,13 @@ private class UdcOnboardingServiceTest {
         setupRestContext(payloadLongLastName);
 
         // Override the DML status code so the Contact DmlException is classified as a duplicate
-        UdcOnboardingService.forceDmlStatusCodeOverride = StatusCode.DUPLICATE_VALUE;
+        KaiOnboardingService.forceDmlStatusCodeOverride = StatusCode.DUPLICATE_VALUE;
         // Activate the @TestVisible flag to force Contact DML failure
-        UdcOnboardingService.forceDirectDmlInTest = true;
+        KaiOnboardingService.forceDirectDmlInTest = true;
 
         // When
         Test.startTest();
-        UdcOnboardingService.OnboardingResponse resp = UdcOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
         Test.stopTest();
 
         // Then — HTTP assertions (409 from buildDmlErrorResponse classifying DUPLICATE_VALUE)
@@ -1064,16 +1064,16 @@ private class UdcOnboardingServiceTest {
     @isTest
     static void test_PublishFailedEvent_ContactRollback() {
         // Given — valid payload, forceContactFailure triggers the rollback path
-        String payload = buildPayload(ROLLBACK_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_UDC, null);
+        String payload = buildPayload(ROLLBACK_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_Kai, null);
         setupRestContext(payload);
 
-        UdcOnboardingService.forceContactFailure = true;
+        KaiOnboardingService.forceContactFailure = true;
         // Activate the @TestVisible flag to force Contact DML failure
-        UdcOnboardingService.forceDirectDmlInTest = true;
+        KaiOnboardingService.forceDirectDmlInTest = true;
 
         // When
         Test.startTest();
-        UdcOnboardingService.OnboardingResponse resp = UdcOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
         Test.stopTest();
 
         // Then — HTTP assertions
@@ -1136,15 +1136,15 @@ private class UdcOnboardingServiceTest {
     @isTest
     static void test_PublishException_DoesNotAlterHttpResponse() {
         // Given — force Contact failure path (calls publishFailedEvent inside try-catch)
-        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_UDC, null);
+        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_Kai, null);
         setupRestContext(payload);
 
-        UdcOnboardingService.forceContactFailure = true;
-        UdcOnboardingService.forceDirectDmlInTest = true;
+        KaiOnboardingService.forceContactFailure = true;
+        KaiOnboardingService.forceDirectDmlInTest = true;
 
         // When
         Test.startTest();
-        UdcOnboardingService.OnboardingResponse resp = UdcOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
         Test.stopTest();
 
         // Then — HTTP response must be clean 500, no unhandled exception propagated
@@ -1181,12 +1181,12 @@ private class UdcOnboardingServiceTest {
     static void test_PublishFailedEvent_AccountNotFound() {
         // Given — valid format Account Id that does not exist in test context
         String nonExistentAccountId = '001000000000000AAA';
-        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_UDC, nonExistentAccountId);
+        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_Kai, nonExistentAccountId);
         setupRestContext(payload);
 
         // When
         Test.startTest();
-        UdcOnboardingService.OnboardingResponse resp = UdcOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
         Test.stopTest();
 
         // Then — HTTP assertions
@@ -1284,7 +1284,7 @@ private class UdcOnboardingServiceTest {
         setupRestContext(payload);
 
         Test.startTest();
-        UdcOnboardingService.OnboardingResponse resp = UdcOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
         Test.stopTest();
 
         System.assertEquals(201, RestContext.response.statusCode,
