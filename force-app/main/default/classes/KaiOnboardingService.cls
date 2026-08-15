@@ -475,7 +475,7 @@ global with sharing class KaiOnboardingService {
     }
 
     /**
-     * Builds a Contact record from the request payload.
+     * Builds a Contact record from the request payload. 
      * Shared by both Branch A and Branch B.
      *
      * @param req               The deserialized request payload

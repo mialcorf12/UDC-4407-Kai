@@ -26,7 +26,7 @@ private class KaiOnboardingServiceTest {
     private static final String VALID_LAST_NAME     = 'Smith';
     private static final String VALID_EMAIL         = 'john.smith@example.com';
     private static final String ROLLBACK_ORG_NAME   = 'RollbackTest';
-    private static final String ONBOARD_TYPE_Kai    = 'udesign.cloud';
+    private static final String ONBOARD_TYPE_Kai    = 'kai';
 
     // =========================================================================
     // RestContext Setup Helper
@@ -86,35 +86,16 @@ private class KaiOnboardingServiceTest {
             + onboardTypeFragment
             + orgSfdcIdFragment
             + '"org_id": "12345",'
-            + '"is_parent": "false",'
             + '"org_name": ' + (orgName != null ? '"' + orgName + '"' : 'null') + ','
             + '"org_type": "Dental Practice",'
             + '"org_status": "Prospect",'
-            + '"shipping_address_id": "SHP00001",'
-            + '"shipping_address_1": "123 Main St",'
-            + '"shipping_city": "Dallas",'
-            + '"shipping_country": "US",'
-            + '"shipping_region": "TX",'
-            + '"shipping_zip": "75001",'
-            + '"phone": "2145550100",'
-            + '"billing_address_id": "BLL00001",'
-            + '"billing_address_1": "123 Main St",'
-            + '"billing_city": "Dallas",'
-            + '"billing_country": "US",'
-            + '"billing_region": "TX",'
-            + '"billing_zip": "75001",'
             + '"license_number": "LIC-2026-001",'
-            + '"signature_required": "false",'
-            + '"out_of_service_area": "false",'
-            + '"tou_accepted_flag": "true",'
-            + '"tou_updated_ts": "2026-07-03",'
             + '"user": {'
             +   '"first_name": "John",'
             +   '"last_name": ' + (lastName != null ? '"' + lastName + '"' : 'null') + ','
             +   '"email": "' + (email != null ? email : '') + '",'
             +   '"phone": "2145550101",'
             +   '"cell_phone": "4145550101",'
-            +   '"mailing_address_id": "MAL00001",'
             +   '"mailing_address_1": "456 Elm St",'
             +   '"mailing_city": "Dallas",'
             +   '"mailing_country": "US",'
@@ -221,7 +202,7 @@ private class KaiOnboardingServiceTest {
     // =========================================================================
 
     /**
-     * GIVEN a valid full payload with onboard_type = 'udesign.cloud'
+     * GIVEN a valid full payload with onboard_type = 'kai'
      * WHEN POST is received
      * THEN statusCode == 201, both records created, Kai_Onboarding__c == true on both
      */
@@ -243,51 +224,52 @@ private class KaiOnboardingServiceTest {
         System.assertNotEquals(null, resp.contactId,
             'Expected contactId to be populated on success');
 
-        // Verify Account persisted with Kai flag, address ID fields, and tou/agreement fields
+        // Verify Account persisted with Kai flag and payload-derived fields
         List<Account> accounts = [
-            SELECT Id, Name, Kai_Onboarding__c, uLab_Acct_Number__c,
-                   ShippingAddressID__c, BillingAddressID__c,
-                   Signed_Agreement__c, Latest_SW_Agreement_Signed__c
+            SELECT Id, Name, Kai_Onboarding__c, Kai_Acct_Number__c, License_Number__c,
+                   Account_Email__c, Account_POC__c, Date_Added_to_Kai__c,
+                   ShippingStreet, BillingCity
             FROM Account
             WHERE Id = :resp.accountId
         ];
         System.assertEquals(1, accounts.size(),
             'Expected exactly 1 Account to be inserted');
         System.assertEquals(true, accounts[0].Kai_Onboarding__c,
-            'Expected Kai_Onboarding__c = true on Account when onboard_type = udesign.cloud');
-        // uLab_Acct_Number__c is null in test context — skipped to avoid the "NFA Create"
-        // workflow which references a cross-reference record inaccessible in SeeAllData=false.
-        // Production behavior (uLab_Acct_Number__c = 12345) is validated via integration testing.
-        System.assertEquals(null, accounts[0].uLab_Acct_Number__c,
-            'uLab_Acct_Number__c is skipped in test context (NFA Create workflow guard)');
-        System.assertEquals('SHP00001', accounts[0].ShippingAddressID__c,
-            'Expected ShippingAddressID__c to be populated from shipping_address_id');
-        System.assertEquals('BLL00001', accounts[0].BillingAddressID__c,
-            'Expected BillingAddressID__c to be populated from billing_address_id');
-        System.assertEquals(true, accounts[0].Signed_Agreement__c,
-            'Expected Signed_Agreement__c = true on Account when tou_accepted_flag = true');
-        System.assertEquals(Date.newInstance(2026, 7, 3), accounts[0].Latest_SW_Agreement_Signed__c,
-            'Expected Latest_SW_Agreement_Signed__c to be populated from tou_updated_ts');
+            'Expected Kai_Onboarding__c = true on Account when onboard_type = kai');
+        System.assertEquals('LIC-2026-001', accounts[0].License_Number__c,
+            'Expected License_Number__c to be populated from license_number');
+        System.assertEquals(VALID_EMAIL, accounts[0].Account_Email__c,
+            'Expected Account_Email__c to be populated from user.email');
+        System.assertEquals(VALID_LAST_NAME, accounts[0].Account_POC__c,
+            'Expected Account_POC__c to be populated from user.last_name');
+        System.assertEquals(Date.today(), accounts[0].Date_Added_to_Kai__c,
+            'Expected Date_Added_to_Kai__c to be set to today');
+        System.assertEquals('456 Elm St', accounts[0].ShippingStreet,
+            'Expected ShippingStreet to be populated from user.mailing_address_1');
+        System.assertEquals('Dallas', accounts[0].BillingCity,
+            'Expected BillingCity to be populated from user.mailing_city');
 
         // Verify Contact persisted with Kai flag and new fields linked to Account
         List<Contact> contacts = [
-            SELECT Id, AccountId, Kai_Onboarding__c, Portal_User_ID__c,
-                   Mailing_Address_ID__c, Activation_URL__c
+            SELECT Id, AccountId, Kai_Onboarding__c, Kai_User_ID__c,
+                   Kai_Activation_URL__c, Contact_Role__c, Company_User_Type__c
             FROM Contact
             WHERE Id = :resp.contactId
         ];
         System.assertEquals(1, contacts.size(),
             'Expected exactly 1 Contact to be inserted');
         System.assertEquals(true, contacts[0].Kai_Onboarding__c,
-            'Expected Kai_Onboarding__c = true on Contact when onboard_type = udesign.cloud');
+            'Expected Kai_Onboarding__c = true on Contact when onboard_type = kai');
         System.assertEquals(resp.accountId, contacts[0].AccountId,
             'Expected Contact to be linked to the created Account');
-        System.assertEquals('USR001', contacts[0].Portal_User_ID__c,
-            'Expected Portal_User_ID__c to be populated from user_id');
-        System.assertEquals('MAL00001', contacts[0].Mailing_Address_ID__c,
-            'Expected Mailing_Address_ID__c to be populated from mailing_address_id');
-        System.assertEquals('https://portal.example.com/activate/USR001', contacts[0].Activation_URL__c,
-            'Expected Activation_URL__c to be populated from activation_url');
+        System.assertEquals('USR001', contacts[0].Kai_User_ID__c,
+            'Expected Kai_User_ID__c to be populated from user_id');
+        System.assertEquals('https://portal.example.com/activate/USR001', contacts[0].Kai_Activation_URL__c,
+            'Expected Kai_Activation_URL__c to be populated from activation_url');
+        System.assertEquals('Orthodontist', contacts[0].Contact_Role__c,
+            'Expected Contact_Role__c to be populated from user.role');
+        System.assertEquals('Account Owner', contacts[0].Company_User_Type__c,
+            'Expected Company_User_Type__c to be mapped from Customer Account Owner');
     }
 
     // =========================================================================
@@ -318,7 +300,7 @@ private class KaiOnboardingServiceTest {
 
         // Verify Kai flag is false on Account
         List<Account> accounts = [
-            SELECT Id, Kai_Onboarding__c, uLab_Acct_Number__c
+            SELECT Id, Name, Kai_Onboarding__c, Kai_Acct_Number__c, License_Number__c
             FROM Account
             WHERE Id = :resp.accountId
         ];
@@ -326,13 +308,12 @@ private class KaiOnboardingServiceTest {
             'Expected exactly 1 Account to be inserted');
         System.assertEquals(false, accounts[0].Kai_Onboarding__c,
             'Expected Kai_Onboarding__c = false on Account when onboard_type is absent');
-        // uLab_Acct_Number__c is null in test context — skipped to avoid NFA Create workflow.
-        System.assertEquals(null, accounts[0].uLab_Acct_Number__c,
-            'uLab_Acct_Number__c is skipped in test context (NFA Create workflow guard)');
+        System.assertEquals('LIC-2026-001', accounts[0].License_Number__c,
+            'Expected License_Number__c to be populated from license_number');
 
         // Verify Kai flag is false on Contact
         List<Contact> contacts = [
-            SELECT Id, Kai_Onboarding__c, Portal_User_ID__c
+            SELECT Id, Name, Kai_Onboarding__c, Kai_User_ID__c
             FROM Contact
             WHERE Id = :resp.contactId
         ];
@@ -340,8 +321,8 @@ private class KaiOnboardingServiceTest {
             'Expected exactly 1 Contact to be inserted');
         System.assertEquals(false, contacts[0].Kai_Onboarding__c,
             'Expected Kai_Onboarding__c = false on Contact when onboard_type is absent');
-        System.assertEquals('USR001', contacts[0].Portal_User_ID__c,
-            'Expected Portal_User_ID__c to be populated from user_id');
+        System.assertEquals('USR001', contacts[0].Kai_User_ID__c,
+            'Expected Kai_User_ID__c to be populated from user_id');
     }
 
     // =========================================================================
@@ -507,9 +488,9 @@ private class KaiOnboardingServiceTest {
 
         // Verify the Account was UPDATED (not a new one inserted) — only 1 Account with this Id
         List<Account> accounts = [
-            SELECT Id, Name, Kai_Onboarding__c, uLab_Acct_Number__c,
-                   ShippingAddressID__c, BillingAddressID__c,
-                   Signed_Agreement__c, Latest_SW_Agreement_Signed__c
+            SELECT Id, Name, Kai_Onboarding__c, Kai_Acct_Number__c, License_Number__c,
+                   Account_Email__c, Account_POC__c,
+                   ShippingStreet, BillingCity
             FROM Account
             WHERE Id = :existing.Id
         ];
@@ -519,17 +500,16 @@ private class KaiOnboardingServiceTest {
             'Expected Account Name to be updated to payload org_name');
         System.assertEquals(true, accounts[0].Kai_Onboarding__c,
             'Expected Kai_Onboarding__c = true on updated Account');
-        // uLab_Acct_Number__c is null in test context — skipped to avoid NFA Create workflow.
-        System.assertEquals(null, accounts[0].uLab_Acct_Number__c,
-            'uLab_Acct_Number__c is skipped in test context (NFA Create workflow guard)');
-        System.assertEquals('SHP00001', accounts[0].ShippingAddressID__c,
-            'Expected ShippingAddressID__c to be populated from shipping_address_id on Account update');
-        System.assertEquals('BLL00001', accounts[0].BillingAddressID__c,
-            'Expected BillingAddressID__c to be populated from billing_address_id on Account update');
-        System.assertEquals(true, accounts[0].Signed_Agreement__c,
-            'Expected Signed_Agreement__c = true on Account when tou_accepted_flag = true');
-        System.assertEquals(Date.newInstance(2026, 7, 3), accounts[0].Latest_SW_Agreement_Signed__c,
-            'Expected Latest_SW_Agreement_Signed__c to be populated from tou_updated_ts');
+        System.assertEquals('LIC-2026-001', accounts[0].License_Number__c,
+            'Expected License_Number__c to be populated from license_number on Account update');
+        System.assertEquals(VALID_EMAIL, accounts[0].Account_Email__c,
+            'Expected Account_Email__c to be populated from user.email on Account update');
+        System.assertEquals(VALID_LAST_NAME, accounts[0].Account_POC__c,
+            'Expected Account_POC__c to be populated from user.last_name on Account update');
+        System.assertEquals('456 Elm St', accounts[0].ShippingStreet,
+            'Expected ShippingStreet to be populated from user.mailing_address_1 on Account update');
+        System.assertEquals('Dallas', accounts[0].BillingCity,
+            'Expected BillingCity to be populated from user.mailing_city on Account update');
 
         // Verify no NEW Account was created (total Accounts in test = 1)
         List<Account> allAccounts = [SELECT Id FROM Account];
@@ -538,8 +518,8 @@ private class KaiOnboardingServiceTest {
 
         // Verify Contact is linked to the pre-existing Account with new fields populated
         List<Contact> contacts = [
-            SELECT Id, AccountId, Kai_Onboarding__c, LastName, Portal_User_ID__c,
-                   Mailing_Address_ID__c, Activation_URL__c
+            SELECT Id, AccountId, Kai_Onboarding__c, LastName, Kai_User_ID__c,
+                   Kai_Activation_URL__c, Contact_Role__c
             FROM Contact
             WHERE Id = :resp.contactId
         ];
@@ -551,12 +531,12 @@ private class KaiOnboardingServiceTest {
             'Expected Kai_Onboarding__c = true on Contact');
         System.assertEquals(VALID_LAST_NAME, contacts[0].LastName,
             'Expected Contact LastName to match payload user.last_name');
-        System.assertEquals('USR001', contacts[0].Portal_User_ID__c,
-            'Expected Portal_User_ID__c to be populated from user_id');
-        System.assertEquals('MAL00001', contacts[0].Mailing_Address_ID__c,
-            'Expected Mailing_Address_ID__c to be populated from mailing_address_id');
-        System.assertEquals('https://portal.example.com/activate/USR001', contacts[0].Activation_URL__c,
-            'Expected Activation_URL__c to be populated from activation_url');
+        System.assertEquals('USR001', contacts[0].Kai_User_ID__c,
+            'Expected Kai_User_ID__c to be populated from user_id');
+        System.assertEquals('https://portal.example.com/activate/USR001', contacts[0].Kai_Activation_URL__c,
+            'Expected Kai_Activation_URL__c to be populated from activation_url');
+        System.assertEquals('Orthodontist', contacts[0].Contact_Role__c,
+            'Expected Contact_Role__c to be populated from user.role');
     }
 
     // =========================================================================
@@ -575,9 +555,8 @@ private class KaiOnboardingServiceTest {
     @isTest
     static void testDuplicateRecordReturns409() {
         String longName = 'A'.repeat(256);
-        String payload = buildPayload(longName, VALID_LAST_NAME, VALID_EMAIL, null, null);
+        String payload = buildPayload(longName, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_Kai, null);
         setupRestContext(payload);
-
         KaiOnboardingService.forceDmlStatusCodeOverride = StatusCode.DUPLICATE_VALUE;
         // Activate the @TestVisible flag to force Account DML failure
         KaiOnboardingService.forceDirectDmlInTest = true;
@@ -603,9 +582,11 @@ private class KaiOnboardingServiceTest {
         System.assertEquals(null, evt.AcctCaseSafeID__c,
             'Failed event AcctCaseSafeID__c must be null — Account was never committed');
         System.assertEquals('12345', evt.uLab_Acct_Number__c,
-            'Failed event uLab_Acct_Number__c must carry the org_id from the payload');
+            'Failed event Kai_Acct_Number__c must carry the org_id from the payload');
         System.assertEquals('USR001', evt.Portal_User_ID__c,
-            'Failed event Portal_User_ID__c must carry the user_id from the payload');
+            'Failed event Kai_User_ID__c must carry the user_id from the payload');
+        System.assertEquals('kai', evt.OnboardType__c,
+            'Failed event OnboardType__c must carry the onboard type from the payload');
         System.assertEquals(RestContext.response.statusCode, Integer.valueOf(evt.Status_Code__c),
             'Failed event Status_Code__c must equal the HTTP status returned to the caller');
         System.assertEquals(resp.errorCode, evt.Error_Code__c,
@@ -646,9 +627,9 @@ private class KaiOnboardingServiceTest {
         System.assertEquals(null, evt.AcctCaseSafeID__c,
             'Failed event AcctCaseSafeID__c must be null — no Account context available');
         System.assertEquals(null, evt.uLab_Acct_Number__c,
-            'Failed event uLab_Acct_Number__c must be null — request body was never parsed');
+            'Failed event Kai_Acct_Number__c must be null — request body was never parsed');
         System.assertEquals(null, evt.Portal_User_ID__c,
-            'Failed event Portal_User_ID__c must be null — request body was never parsed');
+            'Failed event Kai_User_ID__c must be null — request body was never parsed');
         System.assertEquals(RestContext.response.statusCode, Integer.valueOf(evt.Status_Code__c),
             'Failed event Status_Code__c must equal the HTTP status returned to the caller');
         System.assertEquals(resp.errorCode, evt.Error_Code__c,
@@ -766,9 +747,11 @@ private class KaiOnboardingServiceTest {
         System.assertEquals(String.valueOf(resp.contactId), evt.ContactCaseSafeID__c,
             'Success event ContactCaseSafeID__c must equal the created Contact Id');
         System.assertEquals('12345', evt.uLab_Acct_Number__c,
-            'Success event uLab_Acct_Number__c must equal org_id from the payload');
+            'Success event Kai_Acct_Number__c must equal org_id from the payload');
         System.assertEquals('USR001', evt.Portal_User_ID__c,
-            'Success event Portal_User_ID__c must equal user_id from the payload');
+            'Success event Kai_User_ID__c must equal user_id from the payload');
+        System.assertEquals('kai', evt.OnboardType__c,
+            'Success event OnboardType__c must equal onboard type from the payload');
 
         // Then — 0 failed events
         List<Sfdc_Accountuser_CreatedFailed__e> failedEvents = getPublishedFailedEvents();
@@ -832,9 +815,11 @@ private class KaiOnboardingServiceTest {
         System.assertEquals(String.valueOf(resp.contactId), evt.ContactCaseSafeID__c,
             'Success event ContactCaseSafeID__c must equal the created Contact Id');
         System.assertEquals('12345', evt.uLab_Acct_Number__c,
-            'Success event uLab_Acct_Number__c must equal org_id from the payload');
+            'Success event Kai_Acct_Number__c must equal org_id from the payload');
         System.assertEquals('USR001', evt.Portal_User_ID__c,
-            'Success event Portal_User_ID__c must equal user_id from the payload');
+            'Success event Kai_User_ID__c must equal user_id from the payload');
+        System.assertEquals('kai', evt.OnboardType__c,
+            'Success event OnboardType__c must equal onboard type from the payload');
 
         // Then — 0 failed events
         List<Sfdc_Accountuser_CreatedFailed__e> failedEvents = getPublishedFailedEvents();
@@ -863,25 +848,9 @@ private class KaiOnboardingServiceTest {
         String payloadWithOrgId = '{'
             + '"org_id": "99999",'
             + '"org_name": "",'
-            + '"is_parent": "false",'
+            + '"onboard_type": "kai",'
             + '"org_type": "Dental Practice",'
             + '"org_status": "Prospect",'
-            + '"phone": "2145550100",'
-            + '"shipping_address_id": "SHP00001",'
-            + '"shipping_address_1": "123 Main St",'
-            + '"shipping_city": "Dallas",'
-            + '"shipping_country": "US",'
-            + '"shipping_region": "TX",'
-            + '"shipping_zip": "75001",'
-            + '"billing_address_id": "BLL00001",'
-            + '"billing_address_1": "123 Main St",'
-            + '"billing_city": "Dallas",'
-            + '"billing_country": "US",'
-            + '"billing_region": "TX",'
-            + '"billing_zip": "75001",'
-            + '"signature_required": "false",'
-            + '"out_of_service_area": "false",'
-            + '"tou_accepted_flag": "false",'
             + '"user": {'
             +   '"first_name": "John",'
             +   '"last_name": "Smith",'
@@ -915,13 +884,15 @@ private class KaiOnboardingServiceTest {
 
         Sfdc_Accountuser_CreatedFailed__e evt = failedEvents[0];
         System.assertEquals('99999', evt.uLab_Acct_Number__c,
-            'Failed event uLab_Acct_Number__c must carry the org_id from the payload');
+            'Failed event Kai_Acct_Number__c must carry the org_id from the payload');
         System.assertEquals(null, evt.AcctCaseSafeID__c,
             'Failed event AcctCaseSafeID__c must be null — no Account committed');
         System.assertEquals('USR001', evt.Portal_User_ID__c,
-            'Failed event Portal_User_ID__c must carry user_id from the payload');
+            'Failed event Kai_User_ID__c must carry user_id from the payload');
         System.assertEquals(null, evt.ContactCaseSafeID__c,
             'Failed event ContactCaseSafeID__c must be null — no Contact committed');
+        System.assertEquals('kai', evt.OnboardType__c,
+            'Failed event OnboardType__c must carry the onboard type from the payload');
         System.assertEquals(RestContext.response.statusCode, Integer.valueOf(evt.Status_Code__c),
             'Failed event Status_Code__c must equal the HTTP status returned to the caller');
         System.assertEquals(resp.errorCode, evt.Error_Code__c,
@@ -963,25 +934,9 @@ private class KaiOnboardingServiceTest {
         String payloadLongLastName = '{'
             + '"org_id": "12345",'
             + '"org_name": "' + VALID_ORG_NAME + '",'
-            + '"is_parent": "false",'
+            + '"onboard_type": "kai",'
             + '"org_type": "Dental Practice",'
             + '"org_status": "Prospect",'
-            + '"phone": "2145550100",'
-            + '"shipping_address_id": "SHP00001",'
-            + '"shipping_address_1": "123 Main St",'
-            + '"shipping_city": "Dallas",'
-            + '"shipping_country": "US",'
-            + '"shipping_region": "TX",'
-            + '"shipping_zip": "75001",'
-            + '"billing_address_id": "BLL00001",'
-            + '"billing_address_1": "123 Main St",'
-            + '"billing_city": "Dallas",'
-            + '"billing_country": "US",'
-            + '"billing_region": "TX",'
-            + '"billing_zip": "75001",'
-            + '"signature_required": "false",'
-            + '"out_of_service_area": "false",'
-            + '"tou_accepted_flag": "false",'
             + '"user": {'
             +   '"first_name": "John",'
             +   '"last_name": "' + longLastName + '",'
@@ -1020,12 +975,14 @@ private class KaiOnboardingServiceTest {
 
         Sfdc_Accountuser_CreatedFailed__e evt = failedEvents[0];
         System.assertEquals('12345', evt.uLab_Acct_Number__c,
-            'Failed event uLab_Acct_Number__c must carry the org_id from the payload');
+            'Failed event Kai_Acct_Number__c must carry the org_id from the payload');
         // Account was inserted successfully before Contact DML failed → AcctCaseSafeID__c must be populated
         /*System.assertNotEquals(null, evt.AcctCaseSafeID__c,
             'Failed event AcctCaseSafeID__c must carry the Account Id — Account was committed before Contact failed');*/
         System.assertEquals('USR001', evt.Portal_User_ID__c,
-            'Failed event Portal_User_ID__c must carry the user_id from the payload');
+            'Failed event Kai_User_ID__c must carry the user_id from the payload');
+        System.assertEquals('kai', evt.OnboardType__c,
+            'Failed event OnboardType__c must carry the onboard type from the payload');
         System.assertEquals(null, evt.ContactCaseSafeID__c,
             'Failed event ContactCaseSafeID__c must be null — Contact was never committed');
         System.assertEquals(RestContext.response.statusCode, Integer.valueOf(evt.Status_Code__c),
@@ -1204,13 +1161,15 @@ private class KaiOnboardingServiceTest {
 
         Sfdc_Accountuser_CreatedFailed__e evt = failedEvents[0];
         System.assertEquals('12345', evt.uLab_Acct_Number__c,
-            'Failed event uLab_Acct_Number__c must carry org_id from the payload');
+            'Failed event Kai_Acct_Number__c must carry org_id from the payload');
         System.assertEquals(null, evt.AcctCaseSafeID__c,
             'Failed event AcctCaseSafeID__c must be null — no Account was committed');
         System.assertEquals(null, evt.ContactCaseSafeID__c,
             'Failed event ContactCaseSafeID__c must be null — no Contact was committed');
         System.assertEquals('USR001', evt.Portal_User_ID__c,
-            'Failed event Portal_User_ID__c must carry user_id from the payload');
+            'Failed event Kai_User_ID__c must carry user_id from the payload');
+        System.assertEquals('kai', evt.OnboardType__c,
+            'Failed event OnboardType__c must carry onboard type from the payload');
         System.assertEquals(RestContext.response.statusCode, Integer.valueOf(evt.Status_Code__c),
             'Failed event Status_Code__c must equal the HTTP status returned to the caller');
         System.assertEquals(resp.errorCode, evt.Error_Code__c,
@@ -1232,7 +1191,6 @@ private class KaiOnboardingServiceTest {
             Type                    = 'Other',
             Account_Status__c       = 'Prospect',
             Phone                   = '9725550199',
-            Is_Parent__c            = true,
             ShippingCity            = 'Original Shipping City',
             RecordTypeId            = Schema.SObjectType.Account
                 .getRecordTypeInfosByDeveloperName()
@@ -1241,37 +1199,20 @@ private class KaiOnboardingServiceTest {
         );
         insert existing;
 
-        // Payload omits phone, is_parent, and shipping_city (null) — everything else present
+        // Payload omits user.phone and user.mailing_city (null) — everything else present
         String payload = '{'
             + '"org_sfdc_id": "' + existing.Id + '",'
             + '"org_id": "12345",'
             + '"org_name": "' + VALID_ORG_NAME + '",'
             + '"org_type": "Dental Practice",'
             + '"org_status": "Prospect",'
-            + '"shipping_address_id": "SHP00001",'
-            + '"shipping_address_1": "123 Main St",'
-            + '"shipping_country": "US",'
-            + '"shipping_region": "TX",'
-            + '"shipping_zip": "75001",'
-            + '"billing_address_id": "BLL00001",'
-            + '"billing_address_1": "123 Main St",'
-            + '"billing_city": "Dallas",'
-            + '"billing_country": "US",'
-            + '"billing_region": "TX",'
-            + '"billing_zip": "75001",'
-            + '"signature_required": "false",'
-            + '"out_of_service_area": "false",'
-            + '"tou_accepted_flag": "true",'
-            + '"tou_updated_ts": "2026-07-03",'
+            + '"license_number": "LIC-2026-001",'
             + '"user": {'
             +   '"first_name": "John",'
             +   '"last_name": "' + VALID_LAST_NAME + '",'
             +   '"email": "' + VALID_EMAIL + '",'
-            +   '"phone": "2145550101",'
             +   '"cell_phone": "4145550101",'
-            +   '"mailing_address_id": "MAL00001",'
             +   '"mailing_address_1": "456 Elm St",'
-            +   '"mailing_city": "Dallas",'
             +   '"mailing_country": "US",'
             +   '"mailing_state": "TX",'
             +   '"mailing_zipcode": "75001",'
@@ -1293,7 +1234,7 @@ private class KaiOnboardingServiceTest {
             'Expected success=true for Branch B partial-merge scenario');
 
         Account updated = [
-            SELECT Name, Phone, Is_Parent__c, ShippingCity, ShippingStreet, BillingCity
+            SELECT Name, Phone, ShippingCity, ShippingStreet, License_Number__c
             FROM Account
             WHERE Id = :existing.Id
         ];
@@ -1301,18 +1242,16 @@ private class KaiOnboardingServiceTest {
         // Fields present in the payload must be updated
         System.assertEquals(VALID_ORG_NAME, updated.Name,
             'Expected Name to be updated from payload org_name');
-        System.assertEquals('123 Main St', updated.ShippingStreet,
-            'Expected ShippingStreet to be updated from payload shipping_address_1');
-        System.assertEquals('Dallas', updated.BillingCity,
-            'Expected BillingCity to be updated from payload billing_city');
+        System.assertEquals('456 Elm St', updated.ShippingStreet,
+            'Expected ShippingStreet to be updated from payload user.mailing_address_1');
+        System.assertEquals('LIC-2026-001', updated.License_Number__c,
+            'Expected License_Number__c to be updated from payload license_number');
 
-        // Fields omitted (null) from the payload must preserve the existing Account values
+        // Fields omitted (blank) from the payload must preserve the existing Account values
         System.assertEquals('9725550199', updated.Phone,
-            'Expected Phone to be preserved when payload does not send phone');
-        System.assertEquals(true, updated.Is_Parent__c,
-            'Expected Is_Parent__c to be preserved when payload does not send is_parent');
+            'Expected Phone to be preserved when payload does not send user.phone');
         System.assertEquals('Original Shipping City', updated.ShippingCity,
-            'Expected ShippingCity to be preserved when payload does not send shipping_city');
+            'Expected ShippingCity to be preserved when payload does not send user.mailing_city');
     }
 
 }
