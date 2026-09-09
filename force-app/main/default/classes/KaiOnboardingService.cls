@@ -182,6 +182,7 @@ global with sharing class KaiOnboardingService {
                 if (validationError != null) {
                     res.statusCode = 400;
                     OnboardingResponse errResp = new OnboardingResponse();
+                    errResp.onboard_type = onboard_type;
                     errResp.success   = false;
                     errResp.errorCode = 'INVALID_INPUT';
                     errResp.message   = 'Validation failed: ' + validationError;
@@ -198,6 +199,7 @@ global with sharing class KaiOnboardingService {
                 if (validationError != null) {
                     res.statusCode = 400;
                     OnboardingResponse errResp = new OnboardingResponse();
+                    errResp.onboard_type = onboard_type;
                     errResp.success   = false;
                     errResp.errorCode = 'INVALID_INPUT';
                     errResp.message   = 'Validation failed: ' + validationError;
@@ -215,6 +217,7 @@ global with sharing class KaiOnboardingService {
             // always gets the OnboardingResponse contract and a failed event is recorded.
             res.statusCode = 500;
             OnboardingResponse errResp = new OnboardingResponse();
+            errResp.onboard_type = onboard_type;
             errResp.success   = false;
             errResp.errorCode = 'INTERNAL_ERROR';
             errResp.message   = 'Unexpected error: ' + e.getMessage();
@@ -325,6 +328,7 @@ global with sharing class KaiOnboardingService {
         if (existing.isEmpty()) {
             res.statusCode = 404;
             OnboardingResponse errResp = new OnboardingResponse();
+            errResp.onboard_type = onboard_type;
             errResp.success   = false;
             errResp.errorCode = 'ACCOUNT_NOT_FOUND';
             errResp.message   = 'Account ' + req.org_sfdc_id + ' not found in Salesforce.';
@@ -585,6 +589,7 @@ global with sharing class KaiOnboardingService {
             Database.rollback(sp);
             res.statusCode = 500;
             OnboardingResponse errResp = new OnboardingResponse();
+            errResp.onboard_type = onboard_type;
             errResp.success   = false;
             errResp.errorCode = 'SALESFORCE_DML_ERROR';
             errResp.message   = 'The transaction was rolled back. Original Salesforce error: '
@@ -600,6 +605,7 @@ global with sharing class KaiOnboardingService {
         successResp.message   = successMsg;
         successResp.accountId = accountId;
         successResp.contactId = conToInsert.Id;
+        successResp.onboard_type = onboard_type;
         // REQ-PE-1: publish SUCCESS after both records are committed
         publishSuccessEvent(accountId, orgId, conToInsert.Id, userId, onboard_type);
         return successResp;
@@ -742,6 +748,7 @@ global with sharing class KaiOnboardingService {
             ? forceDmlStatusCodeOverride
             : e.getDmlType(0);
         OnboardingResponse errResp = new OnboardingResponse();
+        errResp.onboard_type = 'kai';
         errResp.success = false;
 
         if (dmlType == StatusCode.DUPLICATE_VALUE
