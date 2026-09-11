@@ -43,6 +43,8 @@ private class KaiOnboardingServiceTest {
         KaiOnboardingService.forceContactFailure        = false;
         KaiOnboardingService.forceDirectDmlInTest        = false;
         KaiOnboardingService.forceDmlStatusCodeOverride  = null;
+        KaiOnboardingService.forceGenericException       = false;
+        KaiOnboardingService.forceContactGenericException = false;
     }
 
     /**
@@ -764,5 +766,109 @@ private class KaiOnboardingServiceTest {
             'Expected success=false on the forced Account DML failure path');
         Assert.areEqual(customOnboardType, dmlResp.onboard_type,
             'D1 regression: onboard_type must be echoed from the request, not hardcoded to "kai"');
+    }
+
+    // =========================================================================
+    // Scenario 16 — Non-DML exception (trigger/flow) on Account insert → rollback
+    // =========================================================================
+
+    /**
+     * GIVEN a valid request whose Account insert is intercepted by a
+     *       non-DmlException (simulating an uncaught trigger/Flow exception)
+     * WHEN handlePost is invoked
+     * THEN success=false, errorCode=SALESFORCE_DML_ERROR, and no Contact is created
+     */
+    @isTest
+    static void testAccountInsertGenericExceptionReturnsDmlError() {
+        resetFlags();
+        KaiOnboardingService.OnboardingRequest req = buildRequest(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, null, null);
+
+        KaiOnboardingService.forceGenericException = true;
+
+        Test.startTest();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(req);
+        Test.stopTest();
+
+        Assert.areEqual(false, resp.success,
+            'Expected success=false when a non-DML exception is thrown during Account insert');
+        Assert.areEqual('SALESFORCE_DML_ERROR', resp.errorCode,
+            'Expected errorCode SALESFORCE_DML_ERROR for a non-DML exception on Account insert');
+
+        List<Account> accounts = [SELECT Id FROM Account WHERE Name = :VALID_ORG_NAME];
+        Assert.isTrue(accounts.isEmpty(),
+            'No Account should persist when Account insert throws a non-DML exception');
+        List<Contact> contacts = [SELECT Id FROM Contact WHERE LastName = :VALID_LAST_NAME];
+        Assert.isTrue(contacts.isEmpty(),
+            'No Contact should be created when Account insert fails');
+    }
+
+    // =========================================================================
+    // Scenario 17 — Non-DML exception (trigger/flow) on Account update → rollback
+    // =========================================================================
+
+    /**
+     * GIVEN a pre-existing Account (Branch B) whose update is intercepted by a
+     *       non-DmlException
+     * WHEN handlePost is invoked
+     * THEN success=false, errorCode=SALESFORCE_DML_ERROR, and the pre-existing
+     *      Account is rolled back to its original values
+     */
+    @isTest
+    static void testAccountUpdateGenericExceptionRollsBack() {
+        resetFlags();
+        Account existing = insertExistingAccount();
+        KaiOnboardingService.OnboardingRequest req =
+            buildRequest(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_KAI, existing.Id);
+
+        KaiOnboardingService.forceGenericException = true;
+
+        Test.startTest();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(req);
+        Test.stopTest();
+
+        Assert.areEqual(false, resp.success,
+            'Expected success=false when a non-DML exception is thrown during Account update');
+        Assert.areEqual('SALESFORCE_DML_ERROR', resp.errorCode,
+            'Expected errorCode SALESFORCE_DML_ERROR for a non-DML exception on Account update');
+
+        Account unchanged = [SELECT Name FROM Account WHERE Id = :existing.Id];
+        Assert.areEqual('Original Name', unchanged.Name,
+            'Account must be rolled back to its original values after the non-DML exception');
+        List<Contact> contacts = [SELECT Id FROM Contact WHERE LastName = :VALID_LAST_NAME];
+        Assert.isTrue(contacts.isEmpty(),
+            'No Contact should be created when Account update fails');
+    }
+
+    // =========================================================================
+    // Scenario 18 — Non-DML exception (trigger/flow) on Contact insert → rollback Account
+    // =========================================================================
+
+    /**
+     * GIVEN a valid request whose Account insert succeeds but whose Contact
+     *       insert is intercepted by a non-DmlException
+     * WHEN handlePost is invoked
+     * THEN success=false, errorCode=SALESFORCE_DML_ERROR, and the Account is
+     *      rolled back (atomicity preserved)
+     */
+    @isTest
+    static void testContactInsertGenericExceptionRollsBackAccount() {
+        resetFlags();
+        KaiOnboardingService.OnboardingRequest req = buildRequest(ROLLBACK_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, null, null);
+
+        KaiOnboardingService.forceDirectDmlInTest = true;
+        KaiOnboardingService.forceContactGenericException = true;
+
+        Test.startTest();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(req);
+        Test.stopTest();
+
+        Assert.areEqual(false, resp.success,
+            'Expected success=false when a non-DML exception is thrown during Contact insert');
+        Assert.areEqual('SALESFORCE_DML_ERROR', resp.errorCode,
+            'Expected errorCode SALESFORCE_DML_ERROR for a non-DML exception on Contact insert');
+
+        List<Account> accounts = [SELECT Id FROM Account WHERE Name = :ROLLBACK_ORG_NAME];
+        Assert.isTrue(accounts.isEmpty(),
+            'Account must not persist after Contact insert throws a non-DML exception — rollback must have executed');
     }
 }

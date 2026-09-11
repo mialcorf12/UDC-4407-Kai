@@ -43,6 +43,17 @@ global with sharing class KaiOnboardingService {
     @TestVisible
     private static Boolean forceDirectDmlInTest = false;
 
+    // @TestVisible flags: set to true in a test to force a non-DML exception
+    // (simulating an uncaught trigger/Flow exception) at the corresponding
+    // DML point, exercising the generic Exception catch + rollback path
+    // deterministically. Kept separate per DML point (Account vs. Contact)
+    // so a test can target one point without also short-circuiting the other.
+    @TestVisible
+    private static Boolean forceGenericException = false;
+
+    @TestVisible
+    private static Boolean forceContactGenericException = false;
+
     // =========================================================================
     // Inner Classes — SOAP DTOs
     // =========================================================================
@@ -104,6 +115,14 @@ global with sharing class KaiOnboardingService {
      */
     @TestVisible
     private class ContactInsertException extends Exception {}
+
+    /**
+     * Custom exception used ONLY in test context via the @TestVisible
+     * forceGenericException/forceContactGenericException flags, to simulate
+     * a non-DmlException thrown by a trigger or Flow during Account/Contact DML.
+     */
+    @TestVisible
+    private class GenericTestException extends Exception {}
 
     // =========================================================================
     // Entry Point
@@ -242,6 +261,9 @@ global with sharing class KaiOnboardingService {
         }
 
         try {
+            if (Test.isRunningTest() && forceGenericException) {
+                throw new GenericTestException('Forced test failure: simulated trigger/flow exception on Account insert');
+            }
             if (Test.isRunningTest() && forceDirectDmlInTest) {
                 insert accToInsert;
             } else {
@@ -253,6 +275,10 @@ global with sharing class KaiOnboardingService {
         } catch (DmlException e) {
             // Account insert failed — no records written; no rollback needed.
             return buildDmlErrorResponse(e, null, onboard_type);
+        } catch (Exception e) {
+            // Non-DML failure (trigger/flow exception) during Account insert —
+            // no records written yet, so no rollback needed.
+            return buildGenericErrorResponse(e, null, onboard_type);
         }
 
         // Build and insert Contact linked to the new Account
@@ -319,6 +345,9 @@ global with sharing class KaiOnboardingService {
         }
 
         try {
+            if (Test.isRunningTest() && forceGenericException) {
+                throw new GenericTestException('Forced test failure: simulated trigger/flow exception on Account update');
+            }
             if (Test.isRunningTest() && forceDirectDmlInTest) {
                 update accToUpdate;
             } else {
@@ -330,6 +359,10 @@ global with sharing class KaiOnboardingService {
         } catch (DmlException e) {
             // Account update failed — buildDmlErrorResponse rolls back sp before returning.
             return buildDmlErrorResponse(e, sp, onboard_type);
+        } catch (Exception e) {
+            // Non-DML failure (trigger/flow exception) during Account update —
+            // buildGenericErrorResponse rolls back sp before returning.
+            return buildGenericErrorResponse(e, sp, onboard_type);
         }
 
         // Build and insert Contact linked to the existing Account
@@ -515,6 +548,9 @@ global with sharing class KaiOnboardingService {
         conToInsert.Kai_Activation_URL__c    = con.Kai_Activation_URL__c;
 
         try {
+            if (Test.isRunningTest() && forceContactGenericException) {
+                throw new GenericTestException('Forced test failure: simulated trigger/flow exception on Contact insert');
+            }
             // @TestVisible bypass: forces a controlled failure to test rollback
             // deterministically without relying on org-specific rules.
             if (Test.isRunningTest() && forceDirectDmlInTest && forceContactFailure) {
@@ -542,6 +578,10 @@ global with sharing class KaiOnboardingService {
             errResp.message   = 'The transaction was rolled back. Original Salesforce error: '
                                 + e.getMessage();
             return errResp;
+        } catch (Exception e) {
+            // Non-DML failure (trigger/flow exception) during Contact insert —
+            // buildGenericErrorResponse rolls back sp before returning.
+            return buildGenericErrorResponse(e, sp, onboard_type);
         }
 
         OnboardingResponse successResp = new OnboardingResponse();
@@ -630,6 +670,35 @@ global with sharing class KaiOnboardingService {
                                 + e.getDmlMessage(0);
         }
 
+        return errResp;
+    }
+
+    /**
+     * Handles a non-DML exception (e.g. thrown by a trigger or Flow without
+     * using addError) raised during an Account/Contact insert or update.
+     * Rolls back if a savepoint is provided and returns a SALESFORCE_DML_ERROR
+     * envelope — the underlying save still failed, even though Apex did not
+     * surface it as a DmlException.
+     *
+     * @param e            The caught exception
+     * @param sp           Savepoint to roll back to; pass null when no DML preceded the failure
+     * @param onboardType  The onboard type to echo back on the error envelope
+     */
+    private static OnboardingResponse buildGenericErrorResponse(
+        Exception e,
+        Savepoint sp,
+        String onboardType
+    ) {
+        if (sp != null) {
+            Database.rollback(sp);
+        }
+
+        OnboardingResponse errResp = new OnboardingResponse();
+        errResp.onboard_type = onboardType;
+        errResp.success   = false;
+        errResp.errorCode = 'SALESFORCE_DML_ERROR';
+        errResp.message   = 'The transaction was rolled back. Original Salesforce error: '
+                            + e.getMessage();
         return errResp;
     }
 }
