@@ -54,6 +54,13 @@ global with sharing class KaiOnboardingService {
     @TestVisible
     private static Boolean forceContactGenericException = false;
 
+    // @TestVisible flag: set to true in a test to force an unexpected exception
+    // before any DML runs (simulating a RecordType-resolution failure or other
+    // pre-DML error), exercising the outer catch → INTERNAL_ERROR path
+    // deterministically.
+    @TestVisible
+    private static Boolean forceInternalErrorInTest = false;
+
     // =========================================================================
     // Inner Classes — SOAP DTOs
     // =========================================================================
@@ -161,6 +168,10 @@ global with sharing class KaiOnboardingService {
         String onboard_type = req.onboard_type;
 
         try {
+            if (Test.isRunningTest() && forceInternalErrorInTest) {
+                throw new GenericTestException('Forced test failure: simulated pre-DML unexpected exception');
+            }
+
             // Step 1: Resolve RecordType IDs dynamically (portable across orgs)
             Id accountRecordTypeId = Schema.SObjectType.Account
                 .getRecordTypeInfosByDeveloperName()
@@ -265,24 +276,29 @@ global with sharing class KaiOnboardingService {
                 throw new GenericTestException('Forced test failure: simulated trigger/flow exception on Account insert');
             }
             if (Test.isRunningTest() && forceDirectDmlInTest) {
+                system.debug('handleNewAccount isRunningTest: ' + accToInsert);
                 insert accToInsert;
             } else {
                 Database.DMLOptions dmlOptions = new Database.DMLOptions();
                 dmlOptions.DuplicateRuleHeader.allowSave = true;
                 dmlOptions.DuplicateRuleHeader.runAsCurrentUser = true;
+                system.debug('handleNewAccount DMLOptions: ' + accToInsert);
                 Database.insert(accToInsert, dmlOptions);
             }
         } catch (DmlException e) {
             // Account insert failed — no records written; no rollback needed.
+            system.debug('handleNewAccount DmlException: ' + accToInsert);
             return buildDmlErrorResponse(e, null, onboard_type);
         } catch (Exception e) {
             // Non-DML failure (trigger/flow exception) during Account insert —
             // no records written yet, so no rollback needed.
+            system.debug('handleNewAccount GenericException: ' + accToInsert);
             return buildGenericErrorResponse(e, null, onboard_type);
         }
 
         // Build and insert Contact linked to the new Account
         Contact conToInsert = buildContact(req, accToInsert.Id, contactRecordTypeId, isKaiOnboarding);
+        system.debug('handleNewAccount Contact to insert: ' + conToInsert);
         return insertContact(conToInsert, sp, accToInsert.Id, 'Account and Contact created successfully.', onboard_type);
     }
 
@@ -341,27 +357,33 @@ global with sharing class KaiOnboardingService {
         accToUpdate.Kai_Onboarding__c    = isKaiOnboarding;
         // Kai_Acct_Number__c skipped in test context (same guard as applyAccountFieldsPartial).
         if (!Test.isRunningTest()) {
+            system.debug('handleExistingAccount !isRunningTest: ' + accToUpdate);
             accToUpdate.Kai_Acct_Number__c = acc.Kai_Acct_Number__c;
         }
 
         try {
             if (Test.isRunningTest() && forceGenericException) {
+                system.debug('handleExistingAccount GenericTestException: ' + accToUpdate);
                 throw new GenericTestException('Forced test failure: simulated trigger/flow exception on Account update');
             }
             if (Test.isRunningTest() && forceDirectDmlInTest) {
+                system.debug('handleExistingAccount isRunningTest: ' + accToUpdate);
                 update accToUpdate;
             } else {
                 Database.DMLOptions dmlOptions = new Database.DMLOptions();
                 dmlOptions.DuplicateRuleHeader.allowSave = true;
                 dmlOptions.DuplicateRuleHeader.runAsCurrentUser = true;
+                system.debug('handleExistingAccount DMLOptions: ' + accToUpdate);
                 Database.update(accToUpdate, dmlOptions);
             }
         } catch (DmlException e) {
             // Account update failed — buildDmlErrorResponse rolls back sp before returning.
+            system.debug('handleExistingAccount DmlException: ' + accToUpdate);
             return buildDmlErrorResponse(e, sp, onboard_type);
         } catch (Exception e) {
             // Non-DML failure (trigger/flow exception) during Account update —
             // buildGenericErrorResponse rolls back sp before returning.
+            system.debug('handleExistingAccount GenericException: ' + accToUpdate);
             return buildGenericErrorResponse(e, sp, onboard_type);
         }
 
@@ -549,24 +571,29 @@ global with sharing class KaiOnboardingService {
 
         try {
             if (Test.isRunningTest() && forceContactGenericException) {
+                system.debug('insertContact GenericException: ' + conToInsert);
                 throw new GenericTestException('Forced test failure: simulated trigger/flow exception on Contact insert');
             }
             // @TestVisible bypass: forces a controlled failure to test rollback
             // deterministically without relying on org-specific rules.
             if (Test.isRunningTest() && forceDirectDmlInTest && forceContactFailure) {
+                system.debug('insertContact ContactInsertException: ' + conToInsert);
                 throw new ContactInsertException('Forced test failure for rollback verification');
             }
             if (Test.isRunningTest() && forceDirectDmlInTest) {
+                system.debug('insertContact isRunningTest: ' + conToInsert);
                 insert conToInsert;
             } else {
                 Database.DMLOptions dmlOptions = new Database.DMLOptions();
                 dmlOptions.DuplicateRuleHeader.allowSave = true;
                 dmlOptions.DuplicateRuleHeader.runAsCurrentUser = true;
+                system.debug('insertContact DMLOptions: ' + conToInsert);
                 Database.insert(conToInsert, dmlOptions);
             }
         } catch (DmlException e) {
             // Platform DML failure — buildDmlErrorResponse rolls back sp and classifies the error.
             // accountId is the Account already committed; Contact failed.
+            system.debug('insertContact DmlException: ' + conToInsert);
             return buildDmlErrorResponse(e, sp, onboard_type);
         } catch (ContactInsertException e) {
             // Test-only forced failure — rolls back to verify atomicity.
@@ -577,10 +604,12 @@ global with sharing class KaiOnboardingService {
             errResp.errorCode = 'SALESFORCE_DML_ERROR';
             errResp.message   = 'The transaction was rolled back. Original Salesforce error: '
                                 + e.getMessage();
+            system.debug('insertContact ContactInsertException: ' + conToInsert);
             return errResp;
         } catch (Exception e) {
             // Non-DML failure (trigger/flow exception) during Contact insert —
             // buildGenericErrorResponse rolls back sp before returning.
+            system.debug('insertContact GenericException: ' + conToInsert);
             return buildGenericErrorResponse(e, sp, onboard_type);
         }
 

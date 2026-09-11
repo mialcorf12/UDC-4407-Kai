@@ -45,6 +45,7 @@ private class KaiOnboardingServiceTest {
         KaiOnboardingService.forceDmlStatusCodeOverride  = null;
         KaiOnboardingService.forceGenericException       = false;
         KaiOnboardingService.forceContactGenericException = false;
+        KaiOnboardingService.forceInternalErrorInTest       = false;
     }
 
     /**
@@ -870,5 +871,149 @@ private class KaiOnboardingServiceTest {
         List<Account> accounts = [SELECT Id FROM Account WHERE Name = :ROLLBACK_ORG_NAME];
         Assert.isTrue(accounts.isEmpty(),
             'Account must not persist after Contact insert throws a non-DML exception — rollback must have executed');
+    }
+
+    // =========================================================================
+    // Scenario 19 — Account DML REQUIRED_FIELD_MISSING → VALIDATION_RULE_VIOLATION
+    // =========================================================================
+
+    /**
+     * GIVEN a DML failure at Account insert whose StatusCode is overridden to
+     *       REQUIRED_FIELD_MISSING
+     * WHEN handlePost is invoked
+     * THEN success=false, errorCode=VALIDATION_RULE_VIOLATION
+     *
+     * Triangulates Scenario 14 (FIELD_CUSTOM_VALIDATION_EXCEPTION) — the other
+     * StatusCode that buildDmlErrorResponse also classifies as VALIDATION_RULE_VIOLATION.
+     */
+    @isTest
+    static void testRequiredFieldMissingReturnsValidationRuleViolation() {
+        resetFlags();
+        String longName = 'A'.repeat(256);
+        KaiOnboardingService.OnboardingRequest req = buildRequest(longName, VALID_LAST_NAME, VALID_EMAIL, null, null);
+
+        KaiOnboardingService.forceDmlStatusCodeOverride = StatusCode.REQUIRED_FIELD_MISSING;
+        KaiOnboardingService.forceDirectDmlInTest = true;
+
+        Test.startTest();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(req);
+        Test.stopTest();
+
+        Assert.areEqual(false, resp.success,
+            'Expected success=false on required-field-missing error');
+        Assert.areEqual('VALIDATION_RULE_VIOLATION', resp.errorCode,
+            'Expected errorCode VALIDATION_RULE_VIOLATION for REQUIRED_FIELD_MISSING StatusCode');
+    }
+
+    // =========================================================================
+    // Scenario 20 — Contact DML FIELD_CUSTOM_VALIDATION_EXCEPTION → VALIDATION_RULE_VIOLATION
+    // =========================================================================
+
+    /**
+     * GIVEN a valid Account (created successfully) but a 256-char user.last_name
+     *       forces the Contact insert to throw a DmlException, whose StatusCode
+     *       is overridden to FIELD_CUSTOM_VALIDATION_EXCEPTION
+     * WHEN handlePost is invoked
+     * THEN success=false, errorCode=VALIDATION_RULE_VIOLATION
+     *
+     * Same setup as Scenario 13 (Contact DUPLICATE_VALUE) — the missing
+     * classification at the Contact insert DML point.
+     */
+    @isTest
+    static void testContactValidationRuleViolationReturnsValidationRuleViolation() {
+        resetFlags();
+        String longLastName = 'S'.repeat(256);
+        KaiOnboardingService.OnboardingRequest req = buildRequest(VALID_ORG_NAME, longLastName, VALID_EMAIL, ONBOARD_TYPE_KAI, null);
+
+        KaiOnboardingService.forceDmlStatusCodeOverride = StatusCode.FIELD_CUSTOM_VALIDATION_EXCEPTION;
+        KaiOnboardingService.forceDirectDmlInTest = true;
+
+        Test.startTest();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(req);
+        Test.stopTest();
+
+        Assert.areEqual(false, resp.success,
+            'Expected success=false on Contact validation rule rejection');
+        Assert.areEqual('VALIDATION_RULE_VIOLATION', resp.errorCode,
+            'Expected errorCode VALIDATION_RULE_VIOLATION for FIELD_CUSTOM_VALIDATION_EXCEPTION at Contact insert');
+    }
+
+    // =========================================================================
+    // Scenario 21 — Account update DUPLICATE_VALUE → DUPLICATE_RECORD (Branch B)
+    // =========================================================================
+
+    /**
+     * GIVEN a pre-existing Account (Branch B) whose update DML throws a real
+     *       DmlException (256-char Name), classified via StatusCode override
+     *       as DUPLICATE_VALUE
+     * WHEN handlePost is invoked
+     * THEN success=false, errorCode=DUPLICATE_RECORD, and the existing Account
+     *      is rolled back to its original values
+     *
+     * Branch B equivalent of Scenario 12 — the DUPLICATE_RECORD classification
+     * had only been exercised at Account insert, not Account update.
+     */
+    @isTest
+    static void testAccountUpdateDuplicateRecordReturnsDuplicateRecord() {
+        resetFlags();
+        Account existing = insertExistingAccount();
+        String longName = 'A'.repeat(256);
+        KaiOnboardingService.OnboardingRequest req =
+            buildRequest(longName, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_KAI, existing.Id);
+
+        KaiOnboardingService.forceDmlStatusCodeOverride = StatusCode.DUPLICATE_VALUE;
+        KaiOnboardingService.forceDirectDmlInTest = true;
+
+        Test.startTest();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(req);
+        Test.stopTest();
+
+        Assert.areEqual(false, resp.success,
+            'Expected success=false on Account update duplicate error');
+        Assert.areEqual('DUPLICATE_RECORD', resp.errorCode,
+            'Expected errorCode DUPLICATE_RECORD for DUPLICATE_VALUE StatusCode on Account update');
+
+        Account unchanged = [SELECT Name FROM Account WHERE Id = :existing.Id];
+        Assert.areEqual('Original Name', unchanged.Name,
+            'Account must be rolled back to its original values after the failed update');
+    }
+
+    // =========================================================================
+    // Scenario 22 — Pre-DML unexpected exception → INTERNAL_ERROR
+    // =========================================================================
+
+    /**
+     * GIVEN a valid request that fails before any DML is attempted (simulating
+     *       e.g. a RecordType-resolution failure), via the @TestVisible
+     *       forceInternalErrorInTest flag
+     * WHEN handlePost is invoked
+     * THEN success=false, errorCode=INTERNAL_ERROR, and no Account/Contact is created
+     *
+     * The only errorCode value with no prior test coverage — exercises the
+     * outer catch (Exception e) in handlePost, distinct from the per-DML-point
+     * catches covered by Scenarios 16-18.
+     */
+    @isTest
+    static void testInternalErrorOnUnexpectedException() {
+        resetFlags();
+        KaiOnboardingService.OnboardingRequest req = buildRequest(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, null, null);
+
+        KaiOnboardingService.forceInternalErrorInTest = true;
+
+        Test.startTest();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(req);
+        Test.stopTest();
+
+        Assert.areEqual(false, resp.success,
+            'Expected success=false when an unexpected exception occurs before any DML');
+        Assert.areEqual('INTERNAL_ERROR', resp.errorCode,
+            'Expected errorCode INTERNAL_ERROR for a pre-DML unexpected exception');
+
+        List<Account> accounts = [SELECT Id FROM Account WHERE Name = :VALID_ORG_NAME];
+        Assert.isTrue(accounts.isEmpty(),
+            'No Account should be created when the failure occurs before any DML');
+        List<Contact> contacts = [SELECT Id FROM Contact WHERE LastName = :VALID_LAST_NAME];
+        Assert.isTrue(contacts.isEmpty(),
+            'No Contact should be created when the failure occurs before any DML');
     }
 }
