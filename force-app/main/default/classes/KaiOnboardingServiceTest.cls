@@ -1,19 +1,22 @@
 /**
  * KaiOnboardingServiceTest
  *
- * Test class for KaiOnboardingService covering all 7 Gherkin scenarios
- * defined in the spec (REQ-1 through REQ-8).
+ * Test class for KaiOnboardingService covering all 15 scenarios in the
+ * SOAP migration test matrix (sdd/kai-soap design).
  *
- * TDD Cycle: tests were written BEFORE implementation (RED phase).
- * Each test fails against the stub and passes after Phase 3 GREEN implementation.
+ * KaiOnboardingService.handlePost(OnboardingRequest) is invoked directly —
+ * no RestContext, no JSON serialization. Every assertion runs against the
+ * returned OnboardingResponse envelope.
  *
  * Test runner: sf apex run test -n KaiOnboardingServiceTest
  * API Version: 66.0
  *
- * Coverage note — HTTP 409 and 422:
- * Unit tests cannot construct a platform DmlException with a controlled getDmlType(0) value.
- * The 409 (DUPLICATE_RECORD) and 422 (VALIDATION_RULE_VIOLATION) paths are verified in
- * integration testing against a sandbox org with active Duplicate Rules and Validation Rules.
+ * Coverage note — DUPLICATE_RECORD and VALIDATION_RULE_VIOLATION:
+ * Unit tests cannot construct a platform DmlException with a controlled
+ * getDmlType(0) value. These paths are exercised via the @TestVisible
+ * forceDmlStatusCodeOverride flag, which injects the classification that
+ * buildDmlErrorResponse() would otherwise read from a real DmlException
+ * raised by a Duplicate Rule or Validation Rule in a sandbox org.
  */
 @isTest(SeeAllData=false)
 private class KaiOnboardingServiceTest {
@@ -23,760 +26,76 @@ private class KaiOnboardingServiceTest {
     // =========================================================================
 
     private static final String VALID_ORG_NAME     = 'Acme Dental';
-    private static final String VALID_LAST_NAME     = 'Smith';
-    private static final String VALID_EMAIL         = 'john.smith@example.com';
-    private static final String ROLLBACK_ORG_NAME   = 'RollbackTest';
-    private static final String ONBOARD_TYPE_Kai    = 'kai';
+    private static final String VALID_LAST_NAME    = 'Smith';
+    private static final String VALID_EMAIL        = 'john.smith@example.com';
+    private static final String ROLLBACK_ORG_NAME  = 'RollbackTest';
+    private static final String ONBOARD_TYPE_KAI   = 'kai';
 
     // =========================================================================
-    // RestContext Setup Helper
+    // Test Setup Helpers
     // =========================================================================
 
     /**
-     * Configures RestContext.request and RestContext.response for each test.
-     * Must be called inside Test.startTest()/stopTest() to count toward governor limits.
-     *
-     * @param jsonBody  The raw JSON string to set as the request body
+     * Resets all @TestVisible flags on KaiOnboardingService so each test
+     * starts from a clean, deterministic state.
      */
-    private static void setupRestContext(String jsonBody) {
-        RestRequest req = new RestRequest();
-        req.requestBody = Blob.valueOf(jsonBody);
-        req.httpMethod  = 'POST';
-        RestContext.request  = req;
-        RestContext.response = new RestResponse();
-        // Reset all @TestVisible flags and capture lists so each test starts clean.
-        // EventBus.TestBroker.getPublishedMessages() is unavailable in this org edition;
-        // the @TestVisible static lists in KaiOnboardingService are the capture mechanism.
-        KaiOnboardingService.forceContactFailure          = false;
-        KaiOnboardingService.forceDirectDmlInTest          = false;
-        KaiOnboardingService.forceDmlStatusCodeOverride   = null;
-        KaiOnboardingService.capturedSuccessEvents = new List<Sfdc_Accountuser_CreatedSuccess__e>();
-        KaiOnboardingService.capturedFailedEvents  = new List<Sfdc_Accountuser_CreatedFailed__e>();
+    private static void resetFlags() {
+        KaiOnboardingService.forceContactFailure        = false;
+        KaiOnboardingService.forceDirectDmlInTest        = false;
+        KaiOnboardingService.forceDmlStatusCodeOverride  = null;
     }
 
-    // =========================================================================
-    // Helper: build a valid full JSON payload
-    // =========================================================================
-
     /**
-     * Returns a valid JSON payload string with all required fields.
+     * Builds a fully populated, in-memory OnboardingRequest for direct
+     * invocation of KaiOnboardingService.handlePost(req).
      *
-     * @param orgName       Value for org_name
-     * @param lastName      Value for user.last_name
-     * @param email         Value for user.email
-     * @param onboardType   Value for onboard_type (pass null to omit the field)
-     * @param orgSfdcId     Value for org_sfdc_id (pass null to omit — triggers Branch A: create new Account)
+     * @param orgName      Value for org_name
+     * @param lastName     Value for user.last_name
+     * @param email        Value for user.email
+     * @param onboardType  Value for onboard_type (pass null to omit)
+     * @param orgSfdcId    Value for org_sfdc_id (pass null — triggers Branch A)
      */
-    private static String buildPayload(
+    private static KaiOnboardingService.OnboardingRequest buildRequest(
         String orgName,
         String lastName,
         String email,
         String onboardType,
         String orgSfdcId
     ) {
-        String onboardTypeFragment = (onboardType != null)
-            ? '"onboard_type": "' + onboardType + '",'
-            : '';
-
-        String orgSfdcIdFragment = (orgSfdcId != null)
-            ? '"org_sfdc_id": "' + orgSfdcId + '",'
-            : '';
-
-        return '{'
-            + onboardTypeFragment
-            + orgSfdcIdFragment
-            + '"org_id": "12345",'
-            + '"org_name": ' + (orgName != null ? '"' + orgName + '"' : 'null') + ','
-            + '"org_type": "Dental Practice",'
-            + '"org_status": "Prospect",'
-            + '"license_number": "LIC-2026-001",'
-            + '"user": {'
-            +   '"first_name": "John",'
-            +   '"last_name": ' + (lastName != null ? '"' + lastName + '"' : 'null') + ','
-            +   '"email": "' + (email != null ? email : '') + '",'
-            +   '"phone": "2145550101",'
-            +   '"cell_phone": "4145550101",'
-            +   '"mailing_address_1": "456 Elm St",'
-            +   '"mailing_city": "Dallas",'
-            +   '"mailing_country": "US",'
-            +   '"mailing_state": "TX",'
-            +   '"mailing_zipcode": "75001",'
-            +   '"user_type": "Customer Account Owner",'
-            +   '"role": "Orthodontist",'
-            +   '"user_id": "USR001",'
-            +   '"activation_url": "https://portal.example.com/activate/USR001"'
-            + '}'
-            + '}';
-    }
-
-    // =========================================================================
-    // Scenario 1 — REQ-2: Missing org_name → HTTP 400 INVALID_INPUT
-    // =========================================================================
-
-    /**
-     * GIVEN a payload with a null org_name
-     * WHEN POST is received
-     * THEN statusCode == 400, errorCode == INVALID_INPUT, no DML executed
-     *
-     * TDD: RED against stub (stub returns null → NullPointerException on statusCode access).
-     */
-    @isTest
-    static void testMissingOrgName() {
-        String payload = buildPayload(null, VALID_LAST_NAME, VALID_EMAIL, null, null);
-        setupRestContext(payload);
-
-        Test.startTest();
-        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
-        Test.stopTest();
-
-        System.assertEquals(400, RestContext.response.statusCode,
-            'Expected HTTP 400 when org_name is missing');
-        System.assertEquals(false, resp.success,
-            'Expected success=false for missing org_name');
-        System.assertEquals('INVALID_INPUT', resp.errorCode,
-            'Expected errorCode INVALID_INPUT for missing org_name');
-        // Confirm no Account was inserted
-        List<Account> accounts = [SELECT Id FROM Account WHERE Name = :VALID_ORG_NAME];
-        System.assertEquals(true, accounts.isEmpty(),
-            'No Account should be created when validation fails');
-    }
-
-    // =========================================================================
-    // Scenario 2 — REQ-2: Missing user.last_name → HTTP 400
-    // =========================================================================
-
-    /**
-     * GIVEN a payload with a null user.last_name
-     * WHEN POST is received
-     * THEN statusCode == 400, errorCode == INVALID_INPUT
-     *
-     * Triangulates Scenario 1 — different field, same validation gate.
-     */
-    @isTest
-    static void testMissingLastName() {
-        String payload = buildPayload(VALID_ORG_NAME, null, VALID_EMAIL, null, null);
-        setupRestContext(payload);
-
-        Test.startTest();
-        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
-        Test.stopTest();
-
-        System.assertEquals(400, RestContext.response.statusCode,
-            'Expected HTTP 400 when user.last_name is missing');
-        System.assertEquals(false, resp.success,
-            'Expected success=false for missing last_name');
-        System.assertEquals('INVALID_INPUT', resp.errorCode,
-            'Expected errorCode INVALID_INPUT for missing last_name');
-    }
-
-    // =========================================================================
-    // Scenario 3 — REQ-2: Malformed email → HTTP 400
-    // =========================================================================
-
-    /**
-     * GIVEN a payload with a malformed user.email (no @ symbol)
-     * WHEN POST is received
-     * THEN statusCode == 400, errorCode == INVALID_INPUT
-     *
-     * Triangulates validation: third distinct validation rule.
-     */
-    @isTest
-    static void testInvalidEmail() {
-        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, 'not-an-email', null, null);
-        setupRestContext(payload);
-
-        Test.startTest();
-        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
-        Test.stopTest();
-
-        System.assertEquals(400, RestContext.response.statusCode,
-            'Expected HTTP 400 for malformed email');
-        System.assertEquals(false, resp.success,
-            'Expected success=false for invalid email');
-        System.assertEquals('INVALID_INPUT', resp.errorCode,
-            'Expected errorCode INVALID_INPUT for invalid email');
-    }
-
-    // =========================================================================
-    // Scenario 4 — REQ-3/REQ-4/REQ-5: Success, Kai flag true
-    // =========================================================================
-
-    /**
-     * GIVEN a valid full payload with onboard_type = 'kai'
-     * WHEN POST is received
-     * THEN statusCode == 201, both records created, Kai_Onboarding__c == true on both
-     */
-    @isTest
-    static void testSuccessKaiFlagTrue() {
-        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_Kai, null);
-        setupRestContext(payload);
-
-        Test.startTest();
-        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
-        Test.stopTest();
-
-        System.assertEquals(201, RestContext.response.statusCode,
-            'Expected HTTP 201 for successful creation');
-        System.assertEquals(true, resp.success,
-            'Expected success=true for valid payload');
-        System.assertNotEquals(null, resp.accountId,
-            'Expected accountId to be populated on success');
-        System.assertNotEquals(null, resp.contactId,
-            'Expected contactId to be populated on success');
-
-        // Verify Account persisted with Kai flag and payload-derived fields
-        List<Account> accounts = [
-            SELECT Id, Name, Kai_Onboarding__c, Kai_Acct_Number__c, License_Number__c,
-                   Account_Email__c, Account_POC__c, Date_Added_to_Kai__c,
-                   ShippingStreet, BillingCity
-            FROM Account
-            WHERE Id = :resp.accountId
-        ];
-        System.assertEquals(1, accounts.size(),
-            'Expected exactly 1 Account to be inserted');
-        System.assertEquals(true, accounts[0].Kai_Onboarding__c,
-            'Expected Kai_Onboarding__c = true on Account when onboard_type = kai');
-        System.assertEquals('LIC-2026-001', accounts[0].License_Number__c,
-            'Expected License_Number__c to be populated from license_number');
-        System.assertEquals(VALID_EMAIL, accounts[0].Account_Email__c,
-            'Expected Account_Email__c to be populated from user.email');
-        System.assertEquals(VALID_LAST_NAME, accounts[0].Account_POC__c,
-            'Expected Account_POC__c to be populated from user.last_name');
-        System.assertEquals(Date.today(), accounts[0].Date_Added_to_Kai__c,
-            'Expected Date_Added_to_Kai__c to be set to today');
-        System.assertEquals('456 Elm St', accounts[0].ShippingStreet,
-            'Expected ShippingStreet to be populated from user.mailing_address_1');
-        System.assertEquals('Dallas', accounts[0].BillingCity,
-            'Expected BillingCity to be populated from user.mailing_city');
-
-        // Verify Contact persisted with Kai flag and new fields linked to Account
-        List<Contact> contacts = [
-            SELECT Id, AccountId, Kai_Onboarding__c, Kai_User_ID__c,
-                   Kai_Activation_URL__c, Contact_Role__c, Company_User_Type__c
-            FROM Contact
-            WHERE Id = :resp.contactId
-        ];
-        System.assertEquals(1, contacts.size(),
-            'Expected exactly 1 Contact to be inserted');
-        System.assertEquals(true, contacts[0].Kai_Onboarding__c,
-            'Expected Kai_Onboarding__c = true on Contact when onboard_type = kai');
-        System.assertEquals(resp.accountId, contacts[0].AccountId,
-            'Expected Contact to be linked to the created Account');
-        System.assertEquals('USR001', contacts[0].Kai_User_ID__c,
-            'Expected Kai_User_ID__c to be populated from user_id');
-        System.assertEquals('https://portal.example.com/activate/USR001', contacts[0].Kai_Activation_URL__c,
-            'Expected Kai_Activation_URL__c to be populated from activation_url');
-        System.assertEquals('Orthodontist', contacts[0].Contact_Role__c,
-            'Expected Contact_Role__c to be populated from user.role');
-        System.assertEquals('Account Owner', contacts[0].Company_User_Type__c,
-            'Expected Company_User_Type__c to be mapped from Customer Account Owner');
-    }
-
-    // =========================================================================
-    // Scenario 5 — REQ-5: Success, Kai flag false (no onboard_type)
-    // =========================================================================
-
-    /**
-     * GIVEN a valid payload WITHOUT onboard_type
-     * WHEN POST is received
-     * THEN statusCode == 201, Kai_Onboarding__c == false on both records
-     *
-     * Triangulates Scenario 4: different onboard_type value → different flag outcome.
-     */
-    @isTest
-    static void testSuccessKaiFlagFalse() {
-        // null onboardType, null orgSfdcId → Branch A (create new Account)
-        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, null, null);
-        setupRestContext(payload);
-
-        Test.startTest();
-        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
-        Test.stopTest();
-
-        System.assertEquals(201, RestContext.response.statusCode,
-            'Expected HTTP 201 for valid payload without onboard_type');
-        System.assertEquals(true, resp.success,
-            'Expected success=true for valid payload');
-
-        // Verify Kai flag is false on Account
-        List<Account> accounts = [
-            SELECT Id, Name, Kai_Onboarding__c, Kai_Acct_Number__c, License_Number__c
-            FROM Account
-            WHERE Id = :resp.accountId
-        ];
-        System.assertEquals(1, accounts.size(),
-            'Expected exactly 1 Account to be inserted');
-        System.assertEquals(false, accounts[0].Kai_Onboarding__c,
-            'Expected Kai_Onboarding__c = false on Account when onboard_type is absent');
-        System.assertEquals('LIC-2026-001', accounts[0].License_Number__c,
-            'Expected License_Number__c to be populated from license_number');
-
-        // Verify Kai flag is false on Contact
-        List<Contact> contacts = [
-            SELECT Id, Name, Kai_Onboarding__c, Kai_User_ID__c
-            FROM Contact
-            WHERE Id = :resp.contactId
-        ];
-        System.assertEquals(1, contacts.size(),
-            'Expected exactly 1 Contact to be inserted');
-        System.assertEquals(false, contacts[0].Kai_Onboarding__c,
-            'Expected Kai_Onboarding__c = false on Contact when onboard_type is absent');
-        System.assertEquals('USR001', contacts[0].Kai_User_ID__c,
-            'Expected Kai_User_ID__c to be populated from user_id');
-    }
-
-    // =========================================================================
-    // Scenario 6 — REQ-6: Contact failure → rollback Account
-    // =========================================================================
-
-    /**
-     * GIVEN a valid payload that passes validation but triggers Contact DML failure
-     *       (via @TestVisible forceContactFailure flag)
-     * WHEN POST is received
-     * THEN statusCode == 500, no Account persists in the database (rollback verified via SOQL)
-     */
-    @isTest
-    static void testRollbackOnContactFailure() {
-        String payload = buildPayload(ROLLBACK_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, null, null);
-        setupRestContext(payload);
-
-        // Activate the @TestVisible flag to force Contact DML failure
-        KaiOnboardingService.forceContactFailure = true;
-        KaiOnboardingService.forceDirectDmlInTest = true;
-
-        Test.startTest();
-        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
-        Test.stopTest();
-
-        System.assertEquals(500, RestContext.response.statusCode,
-            'Expected HTTP 500 when Contact DML fails');
-        System.assertEquals(false, resp.success,
-            'Expected success=false when Contact DML fails');
-        System.assertEquals('SALESFORCE_DML_ERROR', resp.errorCode,
-            'Expected errorCode SALESFORCE_DML_ERROR on DML failure');
-
-        // Critical rollback assertion: Account must NOT exist in DB after rollback
-        List<Account> accounts = [SELECT Id FROM Account WHERE Name = :ROLLBACK_ORG_NAME];
-        System.assertEquals(true, accounts.isEmpty(),
-            'Account must not persist after Contact DML failure — rollback must have executed');
-    }
-
-    // =========================================================================
-    // Scenario 7 — REQ-6/REQ-7: Account insert failure → HTTP 500
-    // =========================================================================
-
-    /**
-     * GIVEN a payload that passes validation but causes Account DML failure
-     *       (org_name exceeds 255 chars → triggers platform-level field length error)
-     * WHEN POST is received
-     * THEN statusCode == 500, no Contact created (Account failed first)
-     *
-     * Approach: Pass a 256-character org_name. validateInput() only checks for
-     * null/empty; the platform enforces the 255-char Name limit at DML time,
-     * guaranteeing a deterministic Account DML failure without relying on
-     * org-specific validation rules.
-     */
-    @isTest
-    static void testAccountInsertFailure() {
-        // 256 chars — exceeds Salesforce Account.Name limit of 255
-        String longName = 'A'.repeat(256);
-        String payload = buildPayload(longName, VALID_LAST_NAME, VALID_EMAIL, null, null);
-        setupRestContext(payload);
-
-        // Activate the @TestVisible flag to force Account DML failure
-        KaiOnboardingService.forceDirectDmlInTest = true;
-
-        Test.startTest();
-        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
-        Test.stopTest();
-
-        System.assertEquals(500, RestContext.response.statusCode,
-            'Expected HTTP 500 when Account DML fails due to field length violation');
-        System.assertEquals(false, resp.success,
-            'Expected success=false when Account DML fails');
-        System.assertEquals('SALESFORCE_DML_ERROR', resp.errorCode,
-            'Expected errorCode SALESFORCE_DML_ERROR on Account DML failure');
-
-        // Verify no Contact was created (Account failed first, no AccountId existed)
-        List<Contact> contacts = [SELECT Id FROM Contact WHERE LastName = :VALID_LAST_NAME];
-        System.assertEquals(true, contacts.isEmpty(),
-            'No Contact should be created when Account DML fails');
-    }
-
-    // =========================================================================
-    // Scenario 8 — Branch B: org_sfdc_id provided but Account not found → HTTP 404
-    // =========================================================================
-
-    /**
-     * GIVEN a payload with org_sfdc_id that does not match any Account in the org
-     * WHEN POST is received
-     * THEN statusCode == 404, errorCode == ACCOUNT_NOT_FOUND, no DML executed
-     *
-     * Uses a well-formed but non-existent Salesforce Account Id.
-     * The SOQL query returns empty → endpoint returns 404 without touching the DB.
-     */
-    @isTest
-    static void testOrgSfdcIdNotFound() {
-        // Valid Salesforce Id format but guaranteed not to exist in test context
-        String fakeAccountId = '0016g00000000001AAA';
-        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, null, fakeAccountId);
-        setupRestContext(payload);
-
-        Test.startTest();
-        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
-        Test.stopTest();
-
-        System.assertEquals(404, RestContext.response.statusCode,
-            'Expected HTTP 404 when org_sfdc_id does not match any Account');
-        System.assertEquals(false, resp.success,
-            'Expected success=false when Account not found');
-        System.assertEquals('ACCOUNT_NOT_FOUND', resp.errorCode,
-            'Expected errorCode ACCOUNT_NOT_FOUND');
-        System.assert(resp.message.contains(fakeAccountId),
-            'Expected error message to include the org_sfdc_id that was searched');
-
-        // Confirm no records were inserted
-        List<Account> accounts = [SELECT Id FROM Account WHERE Name = :VALID_ORG_NAME];
-        System.assertEquals(true, accounts.isEmpty(),
-            'No Account should be created when Branch B cannot find the existing Account');
-    }
-
-    // =========================================================================
-    // Scenario 9 — Branch B: org_sfdc_id found → Account updated + Contact created → HTTP 201
-    // =========================================================================
-
-    /**
-     * GIVEN a payload with a valid org_sfdc_id that matches an existing Account
-     * WHEN POST is received
-     * THEN statusCode == 201, the existing Account is updated (not a new one created),
-     *      and a new Contact is created linked to that Account
-     *
-     * Setup: inserts a test Account first, then passes its Id in the payload.
-     * Assertions verify that only ONE Account exists (the pre-existing one, updated)
-     * and that the Contact is linked to it.
-     */
-    @isTest
-    static void testOrgSfdcIdFoundUpdatesAccountAndCreatesContact() {
-        // Insert a pre-existing Account to simulate what Branch B would look up
-        Account existing = new Account(
-            Name         = 'Original Name',
-            Type         = 'Other',
-            Account_Status__c = 'Prospect',
-            RecordTypeId = Schema.SObjectType.Account
-                .getRecordTypeInfosByDeveloperName()
-                .get('Commercial')
-                .getRecordTypeId()
-        );
-        insert existing;
-
-        // Build payload pointing to the existing Account's real Id
-        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_Kai, existing.Id);
-        setupRestContext(payload);
-
-        Test.startTest();
-        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
-        Test.stopTest();
-
-        System.assertEquals(201, RestContext.response.statusCode,
-            'Expected HTTP 201 when org_sfdc_id matches an existing Account');
-        System.assertEquals(true, resp.success,
-            'Expected success=true for Branch B happy path');
-        System.assertEquals(existing.Id, resp.accountId,
-            'Expected accountId to be the pre-existing Account, not a newly created one');
-        System.assertNotEquals(null, resp.contactId,
-            'Expected contactId to be populated on success');
-
-        // Verify the Account was UPDATED (not a new one inserted) — only 1 Account with this Id
-        List<Account> accounts = [
-            SELECT Id, Name, Kai_Onboarding__c, Kai_Acct_Number__c, License_Number__c,
-                   Account_Email__c, Account_POC__c,
-                   ShippingStreet, BillingCity
-            FROM Account
-            WHERE Id = :existing.Id
-        ];
-        System.assertEquals(1, accounts.size(),
-            'Expected exactly 1 Account with the pre-existing Id');
-        System.assertEquals(VALID_ORG_NAME, accounts[0].Name,
-            'Expected Account Name to be updated to payload org_name');
-        System.assertEquals(true, accounts[0].Kai_Onboarding__c,
-            'Expected Kai_Onboarding__c = true on updated Account');
-        System.assertEquals('LIC-2026-001', accounts[0].License_Number__c,
-            'Expected License_Number__c to be populated from license_number on Account update');
-        System.assertEquals(VALID_EMAIL, accounts[0].Account_Email__c,
-            'Expected Account_Email__c to be populated from user.email on Account update');
-        System.assertEquals(VALID_LAST_NAME, accounts[0].Account_POC__c,
-            'Expected Account_POC__c to be populated from user.last_name on Account update');
-        System.assertEquals('456 Elm St', accounts[0].ShippingStreet,
-            'Expected ShippingStreet to be populated from user.mailing_address_1 on Account update');
-        System.assertEquals('Dallas', accounts[0].BillingCity,
-            'Expected BillingCity to be populated from user.mailing_city on Account update');
-
-        // Verify no NEW Account was created (total Accounts in test = 1)
-        List<Account> allAccounts = [SELECT Id FROM Account];
-        System.assertEquals(1, allAccounts.size(),
-            'Branch B must not create a new Account — only the pre-existing one should exist');
-
-        // Verify Contact is linked to the pre-existing Account with new fields populated
-        List<Contact> contacts = [
-            SELECT Id, AccountId, Kai_Onboarding__c, LastName, Kai_User_ID__c,
-                   Kai_Activation_URL__c, Contact_Role__c
-            FROM Contact
-            WHERE Id = :resp.contactId
-        ];
-        System.assertEquals(1, contacts.size(),
-            'Expected exactly 1 Contact to be created');
-        System.assertEquals(existing.Id, contacts[0].AccountId,
-            'Expected Contact to be linked to the pre-existing Account');
-        System.assertEquals(true, contacts[0].Kai_Onboarding__c,
-            'Expected Kai_Onboarding__c = true on Contact');
-        System.assertEquals(VALID_LAST_NAME, contacts[0].LastName,
-            'Expected Contact LastName to match payload user.last_name');
-        System.assertEquals('USR001', contacts[0].Kai_User_ID__c,
-            'Expected Kai_User_ID__c to be populated from user_id');
-        System.assertEquals('https://portal.example.com/activate/USR001', contacts[0].Kai_Activation_URL__c,
-            'Expected Kai_Activation_URL__c to be populated from activation_url');
-        System.assertEquals('Orthodontist', contacts[0].Contact_Role__c,
-            'Expected Contact_Role__c to be populated from user.role');
-    }
-
-    // =========================================================================
-    // Scenario 10 — buildDmlErrorResponse: DUPLICATE_VALUE StatusCode → HTTP 409
-    // =========================================================================
-
-    /**
-     * GIVEN a DML failure whose StatusCode is overridden to DUPLICATE_VALUE
-     * WHEN POST is received
-     * THEN statusCode == 409, errorCode == DUPLICATE_RECORD
-     *
-     * Technique: trigger a real DmlException via a 256-char Account name, then
-     * inject the StatusCode via @TestVisible forceDmlStatusCodeOverride so the
-     * helper classifies it as a duplicate without relying on org Duplicate Rules.
-     */
-    @isTest
-    static void testDuplicateRecordReturns409() {
-        String longName = 'A'.repeat(256);
-        String payload = buildPayload(longName, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_Kai, null);
-        setupRestContext(payload);
-        KaiOnboardingService.forceDmlStatusCodeOverride = StatusCode.DUPLICATE_VALUE;
-        // Activate the @TestVisible flag to force Account DML failure
-        KaiOnboardingService.forceDirectDmlInTest = true;
-
-        Test.startTest();
-        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
-        Test.stopTest();
-
-        System.assertEquals(409, RestContext.response.statusCode,
-            'Expected HTTP 409 for duplicate record StatusCode');
-        System.assertEquals(false, resp.success,
-            'Expected success=false on duplicate error');
-        System.assertEquals('DUPLICATE_RECORD', resp.errorCode,
-            'Expected errorCode DUPLICATE_RECORD for DUPLICATE_VALUE StatusCode');
-        System.assert(resp.message.contains('Duplicate record detected'),
-            'Expected message to indicate duplicate detection');
-
-        List<Sfdc_Accountuser_CreatedFailed__e> failedEvents = getPublishedFailedEvents();
-        System.assertEquals(1, failedEvents.size(),
-            'Expected exactly 1 Sfdc_Accountuser_CreatedFailed__e published when Account insert fails as duplicate');
-
-        Sfdc_Accountuser_CreatedFailed__e evt = failedEvents[0];
-        System.assertEquals(null, evt.AcctCaseSafeID__c,
-            'Failed event AcctCaseSafeID__c must be null — Account was never committed');
-        System.assertEquals('12345', evt.uLab_Acct_Number__c,
-            'Failed event Kai_Acct_Number__c must carry the org_id from the payload');
-        System.assertEquals('USR001', evt.Portal_User_ID__c,
-            'Failed event Kai_User_ID__c must carry the user_id from the payload');
-        System.assertEquals('kai', evt.OnboardType__c,
-            'Failed event OnboardType__c must carry the onboard type from the payload');
-        System.assertEquals(RestContext.response.statusCode, Integer.valueOf(evt.Status_Code__c),
-            'Failed event Status_Code__c must equal the HTTP status returned to the caller');
-        System.assertEquals(resp.errorCode, evt.Error_Code__c,
-            'Failed event Error_Code__c must equal the errorCode returned to the caller');
-    }
-
-    // =========================================================================
-    // Scenario — handlePost safety net: malformed JSON payload → HTTP 500
-    // =========================================================================
-
-    /**
-     * GIVEN a request body that is not valid JSON (fails JSON.deserialize)
-     * WHEN POST is received
-     * THEN statusCode == 500, errorCode == INTERNAL_ERROR, and a
-     * Sfdc_Accountuser_CreatedFailed__e is still published with accountId/orgId/userId
-     * all null since the payload could never be parsed.
-     */
-    @isTest
-    static void testMalformedPayloadReturns500AndPublishesFailedEvent() {
-        setupRestContext('{ this is not valid json');
-
-        Test.startTest();
-        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
-        Test.stopTest();
-
-        System.assertEquals(500, RestContext.response.statusCode,
-            'Expected HTTP 500 for an unparseable request body');
-        System.assertEquals(false, resp.success,
-            'Expected success=false on internal error');
-        System.assertEquals('INTERNAL_ERROR', resp.errorCode,
-            'Expected errorCode INTERNAL_ERROR for the handlePost safety-net catch');
-
-        List<Sfdc_Accountuser_CreatedFailed__e> failedEvents = getPublishedFailedEvents();
-        System.assertEquals(1, failedEvents.size(),
-            'Expected exactly 1 Sfdc_Accountuser_CreatedFailed__e published on malformed payload');
-
-        Sfdc_Accountuser_CreatedFailed__e evt = failedEvents[0];
-        System.assertEquals(null, evt.AcctCaseSafeID__c,
-            'Failed event AcctCaseSafeID__c must be null — no Account context available');
-        System.assertEquals(null, evt.uLab_Acct_Number__c,
-            'Failed event Kai_Acct_Number__c must be null — request body was never parsed');
-        System.assertEquals(null, evt.Portal_User_ID__c,
-            'Failed event Kai_User_ID__c must be null — request body was never parsed');
-        System.assertEquals(RestContext.response.statusCode, Integer.valueOf(evt.Status_Code__c),
-            'Failed event Status_Code__c must equal the HTTP status returned to the caller');
-        System.assertEquals(resp.errorCode, evt.Error_Code__c,
-            'Failed event Error_Code__c must equal the errorCode returned to the caller');
-    }
-
-    // =========================================================================
-    // Scenario 11 — buildDmlErrorResponse: FIELD_CUSTOM_VALIDATION_EXCEPTION → HTTP 422
-    // =========================================================================
-
-    /**
-     * GIVEN a DML failure whose StatusCode is overridden to FIELD_CUSTOM_VALIDATION_EXCEPTION
-     * WHEN POST is received
-     * THEN statusCode == 422, errorCode == VALIDATION_RULE_VIOLATION
-     *
-     * Same injection technique as Scenario 10 — real DmlException via 256-char name,
-     * StatusCode overridden via @TestVisible flag.
-     */
-    @isTest
-    static void testValidationRuleViolationReturns422() {
-        String longName = 'A'.repeat(256);
-        String payload = buildPayload(longName, VALID_LAST_NAME, VALID_EMAIL, null, null);
-        setupRestContext(payload);
-
-        KaiOnboardingService.forceDmlStatusCodeOverride = StatusCode.FIELD_CUSTOM_VALIDATION_EXCEPTION;
-
-        // Activate the @TestVisible flag to force DML failure
-        KaiOnboardingService.forceDirectDmlInTest = true;
-
-        Test.startTest();
-        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
-        Test.stopTest();
-
-        System.assertEquals(422, RestContext.response.statusCode,
-            'Expected HTTP 422 for validation rule StatusCode');
-        System.assertEquals(false, resp.success,
-            'Expected success=false on validation rule rejection');
-        System.assertEquals('VALIDATION_RULE_VIOLATION', resp.errorCode,
-            'Expected errorCode VALIDATION_RULE_VIOLATION for FIELD_CUSTOM_VALIDATION_EXCEPTION StatusCode');
-        System.assert(resp.message.contains('validation rule rejected'),
-            'Expected message to reference validation rule rejection');
-    }
-
-    // =========================================================================
-    // Platform Event Assertion Helper
-    // =========================================================================
-
-    /**
-     * Retrieves published success events captured during the test via
-     * KaiOnboardingService.capturedSuccessEvents — a @TestVisible static list.
-     *
-     * Note: EventBus.TestBroker.getPublishedMessages() is not available in this
-     * org's edition. The @TestVisible capture-list pattern is used instead:
-     * KaiOnboardingService.publishSuccessEvent() appends to capturedSuccessEvents
-     * inside a Test.isRunningTest() guard whenever EventBus.publish() succeeds.
-     */
-    private static List<Sfdc_Accountuser_CreatedSuccess__e> getPublishedSuccessEvents() {
-        return KaiOnboardingService.capturedSuccessEvents;
+        KaiOnboardingService.OnboardingRequest req = new KaiOnboardingService.OnboardingRequest();
+        req.org_id         = '12345';
+        req.org_sfdc_id     = orgSfdcId;
+        req.onboard_type    = onboardType;
+        req.org_name        = orgName;
+        req.org_type        = 'Dental Practice';
+        req.org_status      = 'Prospect';
+        req.license_number  = 'LIC-2026-001';
+
+        KaiOnboardingService.ContactRequest user = new KaiOnboardingService.ContactRequest();
+        user.first_name         = 'John';
+        user.last_name          = lastName;
+        user.email              = email;
+        user.phone              = '2145550101';
+        user.cell_phone         = '4145550101';
+        user.mailing_address_1  = '456 Elm St';
+        user.mailing_city       = 'Dallas';
+        user.mailing_country    = 'US';
+        user.mailing_state      = 'TX';
+        user.mailing_zipcode    = '75001';
+        user.user_type          = 'Customer Account Owner';
+        user.role               = 'Orthodontist';
+        user.user_id            = 'USR001';
+        user.activation_url     = 'https://portal.example.com/activate/USR001';
+
+        req.user = user;
+        return req;
     }
 
     /**
-     * Retrieves published failed events captured during the test via
-     * KaiOnboardingService.capturedFailedEvents — a @TestVisible static list.
-     *
-     * Same rationale as getPublishedSuccessEvents() above.
+     * Inserts a pre-existing Account so Branch B (org_sfdc_id present) has a
+     * record to look up and update.
      */
-    private static List<Sfdc_Accountuser_CreatedFailed__e> getPublishedFailedEvents() {
-        // Activate the @TestVisible flag to force DML failure
-        KaiOnboardingService.forceDirectDmlInTest = true;
-        
-        return KaiOnboardingService.capturedFailedEvents;
-    }
-
-    // =========================================================================
-    // T-21 — REQ-PE-1: Success event published after Branch A (new Account + Contact)
-    // =========================================================================
-
-    /**
-     * GIVEN a valid POST payload with no org_sfdc_id (Branch A path)
-     *       AND org_id = '12345' and user.user_id = 'USR001'
-     * WHEN POST is received
-     * THEN 201 + 1 Sfdc_Accountuser_CreatedSuccess__e published
-     *      with Org_Sfdc_Id__c == accountId, User_Sfdc_Id__c == contactId,
-     *           Org_Id__c == '12345', User_Id__c == 'USR001'
-     * AND  0 Sfdc_Accountuser_CreatedFailed__e published
-     *
-     * TDD: RED — no event assertions existed before this method was added.
-     *      GREEN — publishSuccessEvent() already wired in PR-2 production code.
-     */
-    @isTest
-    static void test_PublishSuccessEvent_BranchA() {
-        // Given — valid payload, Branch A (no org_sfdc_id)
-        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_Kai, null);
-        setupRestContext(payload);
-
-        // When
-        Test.startTest();
-        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
-        Test.stopTest();
-
-        // Then — HTTP assertions
-        System.assertEquals(201, RestContext.response.statusCode,
-            'Expected HTTP 201 for Branch A success');
-        System.assertEquals(true, resp.success,
-            'Expected success=true for valid Branch A payload');
-
-        // Then — success event assertions
-        List<Sfdc_Accountuser_CreatedSuccess__e> successEvents = getPublishedSuccessEvents();
-        System.assertEquals(1, successEvents.size(),
-            'Expected exactly 1 Sfdc_Accountuser_CreatedSuccess__e published on Branch A success');
-
-        Sfdc_Accountuser_CreatedSuccess__e evt = successEvents[0];
-        System.assertEquals(String.valueOf(resp.accountId), evt.AcctCaseSafeID__c,
-            'Success event AcctCaseSafeID__c must equal the created Account Id');
-        System.assertEquals(String.valueOf(resp.contactId), evt.ContactCaseSafeID__c,
-            'Success event ContactCaseSafeID__c must equal the created Contact Id');
-        System.assertEquals('12345', evt.uLab_Acct_Number__c,
-            'Success event Kai_Acct_Number__c must equal org_id from the payload');
-        System.assertEquals('USR001', evt.Portal_User_ID__c,
-            'Success event Kai_User_ID__c must equal user_id from the payload');
-        System.assertEquals('kai', evt.OnboardType__c,
-            'Success event OnboardType__c must equal onboard type from the payload');
-
-        // Then — 0 failed events
-        List<Sfdc_Accountuser_CreatedFailed__e> failedEvents = getPublishedFailedEvents();
-        System.assertEquals(0, failedEvents.size(),
-            'Expected 0 Sfdc_Accountuser_CreatedFailed__e on Branch A success');
-    }
-
-    // =========================================================================
-    // T-22 — REQ-PE-1: Success event published after Branch B (existing Account updated)
-    // =========================================================================
-
-    /**
-     * GIVEN an existing Account in the org
-     *       AND a POST payload with org_sfdc_id pointing to that Account
-     * WHEN POST is received
-     * THEN 201 + 1 Sfdc_Accountuser_CreatedSuccess__e published
-     *      with Org_Sfdc_Id__c == existing Account Id, User_Sfdc_Id__c == new Contact Id
-     * AND  0 Sfdc_Accountuser_CreatedFailed__e published
-     *
-     * TDD: RED — same as T-21 (no event assertions existed before this method was added).
-     *      GREEN — publishSuccessEvent() wired in PR-2 for both Branch A and Branch B.
-     */
-    @isTest
-    static void test_PublishSuccessEvent_BranchB() {
-        // Given — pre-insert an Account to satisfy Branch B lookup
+    private static Account insertExistingAccount() {
         Account existing = new Account(
             Name              = 'Original Name',
             Type              = 'Other',
@@ -787,450 +106,411 @@ private class KaiOnboardingServiceTest {
                 .getRecordTypeId()
         );
         insert existing;
-
-        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_Kai, existing.Id);
-        setupRestContext(payload);
-
-        // When
-        Test.startTest();
-        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
-        Test.stopTest();
-
-        // Then — HTTP assertions
-        System.assertEquals(201, RestContext.response.statusCode,
-            'Expected HTTP 201 for Branch B success');
-        System.assertEquals(true, resp.success,
-            'Expected success=true for valid Branch B payload');
-        System.assertEquals(existing.Id, resp.accountId,
-            'Expected accountId to be the pre-existing Account on Branch B');
-
-        // Then — success event assertions
-        List<Sfdc_Accountuser_CreatedSuccess__e> successEvents = getPublishedSuccessEvents();
-        System.assertEquals(1, successEvents.size(),
-            'Expected exactly 1 Sfdc_Accountuser_CreatedSuccess__e published on Branch B success');
-
-        Sfdc_Accountuser_CreatedSuccess__e evt = successEvents[0];
-        System.assertEquals(String.valueOf(existing.Id), evt.AcctCaseSafeID__c,
-            'Success event AcctCaseSafeID__c must equal the existing Account Id');
-        System.assertEquals(String.valueOf(resp.contactId), evt.ContactCaseSafeID__c,
-            'Success event ContactCaseSafeID__c must equal the created Contact Id');
-        System.assertEquals('12345', evt.uLab_Acct_Number__c,
-            'Success event Kai_Acct_Number__c must equal org_id from the payload');
-        System.assertEquals('USR001', evt.Portal_User_ID__c,
-            'Success event Kai_User_ID__c must equal user_id from the payload');
-        System.assertEquals('kai', evt.OnboardType__c,
-            'Success event OnboardType__c must equal onboard type from the payload');
-
-        // Then — 0 failed events
-        List<Sfdc_Accountuser_CreatedFailed__e> failedEvents = getPublishedFailedEvents();
-        System.assertEquals(0, failedEvents.size(),
-            'Expected 0 Sfdc_Accountuser_CreatedFailed__e on Branch B success');
+        return existing;
     }
 
     // =========================================================================
-    // T-23 — REQ-PE-2: Failed event published on 400 validation error
+    // Scenario 1 — REQ-1: Null request → INVALID_INPUT, zero DML
     // =========================================================================
 
     /**
-     * GIVEN a POST payload with blank org_name (triggers 400 INVALID_INPUT)
-     *       AND org_id = '99999' included in the payload
-     * WHEN POST is received
-     * THEN 400 + 1 Sfdc_Accountuser_CreatedFailed__e published
-     *      with Org_Id__c == '99999', Org_Sfdc_Id__c == null, User_Sfdc_Id__c == null
-     * AND  0 Sfdc_Accountuser_CreatedSuccess__e published
-     *
-     * TDD: RED — publishFailedEvent call on 400 path existed in PR-2 but was untested.
-     *      GREEN — production code already calls publishFailedEvent(req.org_id) at the 400 gate.
+     * GIVEN req is null
+     * WHEN handlePost(null) is invoked
+     * THEN success=false, errorCode=INVALID_INPUT, and no DML is executed
      */
     @isTest
-    static void test_PublishFailedEvent_ValidationError() {
-        // Given — blank org_name triggers INVALID_INPUT; org_id='99999' included in body
-        String payloadWithOrgId = '{'
-            + '"org_id": "99999",'
-            + '"org_name": "",'
-            + '"onboard_type": "kai",'
-            + '"org_type": "Dental Practice",'
-            + '"org_status": "Prospect",'
-            + '"user": {'
-            +   '"first_name": "John",'
-            +   '"last_name": "Smith",'
-            +   '"email": "john.smith@example.com",'
-            +   '"phone": "2145550101",'
-            +   '"cell_phone": "4145550101",'
-            +   '"user_id": "USR001",'
-            +   '"user_type": "Customer Account Owner",'
-            +   '"role": "Orthodontist"'
-            + '}'
-            + '}';
-        setupRestContext(payloadWithOrgId);
+    static void testNullRequestReturnsInvalidInput() {
+        resetFlags();
 
-        // When
         Test.startTest();
-        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(null);
         Test.stopTest();
 
-        // Then — HTTP assertions
-        System.assertEquals(400, RestContext.response.statusCode,
-            'Expected HTTP 400 for blank org_name validation failure');
-        System.assertEquals(false, resp.success,
-            'Expected success=false on validation error');
-        System.assertEquals('INVALID_INPUT', resp.errorCode,
-            'Expected errorCode INVALID_INPUT for blank org_name');
+        Assert.areEqual(false, resp.success,
+            'Expected success=false for a null request');
+        Assert.areEqual('INVALID_INPUT', resp.errorCode,
+            'Expected errorCode INVALID_INPUT for a null request');
+        Assert.areEqual('Request body cannot be null', resp.message,
+            'Expected the null-guard message');
 
-        // Then — failed event assertions
-        List<Sfdc_Accountuser_CreatedFailed__e> failedEvents = getPublishedFailedEvents();
-        System.assertEquals(1, failedEvents.size(),
-            'Expected exactly 1 Sfdc_Accountuser_CreatedFailed__e published on 400 validation error');
-
-        Sfdc_Accountuser_CreatedFailed__e evt = failedEvents[0];
-        System.assertEquals('99999', evt.uLab_Acct_Number__c,
-            'Failed event Kai_Acct_Number__c must carry the org_id from the payload');
-        System.assertEquals(null, evt.AcctCaseSafeID__c,
-            'Failed event AcctCaseSafeID__c must be null — no Account committed');
-        System.assertEquals('USR001', evt.Portal_User_ID__c,
-            'Failed event Kai_User_ID__c must carry user_id from the payload');
-        System.assertEquals(null, evt.ContactCaseSafeID__c,
-            'Failed event ContactCaseSafeID__c must be null — no Contact committed');
-        System.assertEquals('kai', evt.OnboardType__c,
-            'Failed event OnboardType__c must carry the onboard type from the payload');
-        System.assertEquals(RestContext.response.statusCode, Integer.valueOf(evt.Status_Code__c),
-            'Failed event Status_Code__c must equal the HTTP status returned to the caller');
-        System.assertEquals(resp.errorCode, evt.Error_Code__c,
-            'Failed event Error_Code__c must equal the errorCode returned to the caller');
-        System.assertEquals(resp.message, evt.Error_Message__c,
-            'Failed event Error_Message__c must equal the message returned to the caller');
-
-        // Then — 0 success events
-        List<Sfdc_Accountuser_CreatedSuccess__e> successEvents = getPublishedSuccessEvents();
-        System.assertEquals(0, successEvents.size(),
-            'Expected 0 Sfdc_Accountuser_CreatedSuccess__e on validation error');
+        List<Account> accounts = [SELECT Id FROM Account];
+        Assert.isTrue(accounts.isEmpty(),
+            'No Account should be created when the request is null');
     }
 
     // =========================================================================
-    // T-24 — REQ-PE-2: Failed event published when Contact DML fails (classified as 409)
+    // Scenario 2 — REQ-2: Missing org_name → INVALID_INPUT
     // =========================================================================
 
     /**
-     * GIVEN a POST payload with a valid Account but a 256-char LastName on Contact
-     *       (triggers DmlException in insertContact()) AND forceDmlStatusCodeOverride = DUPLICATE_VALUE
-     * WHEN POST is received
-     * THEN 409 DUPLICATE_RECORD + 1 Sfdc_Accountuser_CreatedFailed__e published
-     *      because the DmlException path in insertContact() calls publishFailedEvent()
-     *      BEFORE calling buildDmlErrorResponse()
-     * AND  0 Sfdc_Accountuser_CreatedSuccess__e published
-     *
-     * Note: A 256-char LastName is used (instead of org_name) so the Account insert
-     * succeeds and the failure is triggered in the Contact insert path — the only path
-     * that combines DmlException classification with publishFailedEvent().
-     *
-     * TDD: RED — failed event publishing from Contact DML path was untested.
-     *      GREEN — production code: insertContact() calls publishFailedEvent(orgId) in DmlException catch.
+     * GIVEN a request with a null org_name
+     * WHEN handlePost is invoked
+     * THEN success=false, errorCode=INVALID_INPUT, no DML executed
      */
     @isTest
-    static void test_PublishFailedEvent_DmlDuplicate() {
-        // Given — valid Account name, 256-char LastName forces Contact DML failure;
-        //         status code override makes buildDmlErrorResponse classify it as DUPLICATE_VALUE → 409
-        String longLastName = 'S'.repeat(256);
-        String payloadLongLastName = '{'
-            + '"org_id": "12345",'
-            + '"org_name": "' + VALID_ORG_NAME + '",'
-            + '"onboard_type": "kai",'
-            + '"org_type": "Dental Practice",'
-            + '"org_status": "Prospect",'
-            + '"user": {'
-            +   '"first_name": "John",'
-            +   '"last_name": "' + longLastName + '",'
-            +   '"email": "john.smith@example.com",'
-            +   '"phone": "2145550101",'
-            +   '"cell_phone": "4145550101",'
-            +   '"user_id": "USR001",'
-            +   '"user_type": "Customer Account Owner",'
-            +   '"role": "Orthodontist"'
-            + '}'
-            + '}';
-        setupRestContext(payloadLongLastName);
+    static void testMissingOrgName() {
+        resetFlags();
+        KaiOnboardingService.OnboardingRequest req = buildRequest(null, VALID_LAST_NAME, VALID_EMAIL, null, null);
 
-        // Override the DML status code so the Contact DmlException is classified as a duplicate
-        KaiOnboardingService.forceDmlStatusCodeOverride = StatusCode.DUPLICATE_VALUE;
-        // Activate the @TestVisible flag to force Contact DML failure
-        KaiOnboardingService.forceDirectDmlInTest = true;
-
-        // When
         Test.startTest();
-        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(req);
         Test.stopTest();
 
-        // Then — HTTP assertions (409 from buildDmlErrorResponse classifying DUPLICATE_VALUE)
-        System.assertEquals(409, RestContext.response.statusCode,
-            'Expected HTTP 409 when Contact DML is classified as DUPLICATE_VALUE');
-        System.assertEquals(false, resp.success,
-            'Expected success=false on duplicate DML error');
-        System.assertEquals('DUPLICATE_RECORD', resp.errorCode,
-            'Expected errorCode DUPLICATE_RECORD for DUPLICATE_VALUE classification');
+        Assert.areEqual(false, resp.success,
+            'Expected success=false for missing org_name');
+        Assert.areEqual('INVALID_INPUT', resp.errorCode,
+            'Expected errorCode INVALID_INPUT for missing org_name');
 
-        // Then — failed event assertions (publishFailedEvent called before buildDmlErrorResponse in DmlException path)
-        List<Sfdc_Accountuser_CreatedFailed__e> failedEvents = getPublishedFailedEvents();
-        System.assertEquals(1, failedEvents.size(),
-            'Expected exactly 1 Sfdc_Accountuser_CreatedFailed__e published when Contact DML fails');
-
-        Sfdc_Accountuser_CreatedFailed__e evt = failedEvents[0];
-        System.assertEquals('12345', evt.uLab_Acct_Number__c,
-            'Failed event Kai_Acct_Number__c must carry the org_id from the payload');
-        // Account was inserted successfully before Contact DML failed → AcctCaseSafeID__c must be populated
-        /*System.assertNotEquals(null, evt.AcctCaseSafeID__c,
-            'Failed event AcctCaseSafeID__c must carry the Account Id — Account was committed before Contact failed');*/
-        System.assertEquals('USR001', evt.Portal_User_ID__c,
-            'Failed event Kai_User_ID__c must carry the user_id from the payload');
-        System.assertEquals('kai', evt.OnboardType__c,
-            'Failed event OnboardType__c must carry the onboard type from the payload');
-        System.assertEquals(null, evt.ContactCaseSafeID__c,
-            'Failed event ContactCaseSafeID__c must be null — Contact was never committed');
-        System.assertEquals(RestContext.response.statusCode, Integer.valueOf(evt.Status_Code__c),
-            'Failed event Status_Code__c must equal the HTTP status returned to the caller');
-        System.assertEquals(resp.errorCode, evt.Error_Code__c,
-            'Failed event Error_Code__c must equal the errorCode returned to the caller');
-        String expectedTruncatedMessage = resp.message.length() > 255
-            ? resp.message.substring(0, 255)
-            : resp.message;
-        System.assertEquals(expectedTruncatedMessage, evt.Error_Message__c,
-            'Failed event Error_Message__c must equal the message returned to the caller, truncated to 255 chars');
-
-        // Then — 0 success events
-        List<Sfdc_Accountuser_CreatedSuccess__e> successEvents = getPublishedSuccessEvents();
-        System.assertEquals(0, successEvents.size(),
-            'Expected 0 Sfdc_Accountuser_CreatedSuccess__e when Contact DML fails');
+        List<Account> accounts = [SELECT Id FROM Account WHERE Name = :VALID_ORG_NAME];
+        Assert.isTrue(accounts.isEmpty(),
+            'No Account should be created when validation fails');
     }
 
     // =========================================================================
-    // T-25 — REQ-PE-2/REQ-PE-5: Failed event published despite DML rollback
+    // Scenario 3 — REQ-2: Missing user.last_name → INVALID_INPUT
     // =========================================================================
 
     /**
-     * GIVEN a valid POST payload AND forceContactFailure = true
-     *       (ContactInsertException path → Account is rolled back)
-     * WHEN POST is received
-     * THEN 500 SALESFORCE_DML_ERROR + 1 Sfdc_Accountuser_CreatedFailed__e published
-     *      DESPITE the DML rollback (PublishImmediately survives rollback by design)
-     * AND  Account does NOT persist in the database (rollback confirmed)
-     * AND  0 Sfdc_Accountuser_CreatedSuccess__e published
+     * GIVEN a request with a null user.last_name
+     * WHEN handlePost is invoked
+     * THEN success=false, errorCode=INVALID_INPUT
      *
-     * TDD: RED — PUBLISH_IMMEDIATELY survival of rollback was untested before PR-3.
-     *      GREEN — production code: ContactInsertException catch calls publishFailedEvent()
-     *              after Database.rollback(sp) — event is published with PUBLISH_IMMEDIATELY.
+     * Triangulates Scenario 2 — different field, same validation gate.
      */
     @isTest
-    static void test_PublishFailedEvent_ContactRollback() {
-        // Given — valid payload, forceContactFailure triggers the rollback path
-        String payload = buildPayload(ROLLBACK_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_Kai, null);
-        setupRestContext(payload);
+    static void testMissingLastName() {
+        resetFlags();
+        KaiOnboardingService.OnboardingRequest req = buildRequest(VALID_ORG_NAME, null, VALID_EMAIL, null, null);
 
-        KaiOnboardingService.forceContactFailure = true;
-        // Activate the @TestVisible flag to force Contact DML failure
-        KaiOnboardingService.forceDirectDmlInTest = true;
-
-        // When
         Test.startTest();
-        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(req);
         Test.stopTest();
 
-        // Then — HTTP assertions
-        System.assertEquals(500, RestContext.response.statusCode,
-            'Expected HTTP 500 when Contact DML is forced to fail');
-        System.assertEquals(false, resp.success,
-            'Expected success=false on Contact rollback');
-        System.assertEquals('SALESFORCE_DML_ERROR', resp.errorCode,
-            'Expected errorCode SALESFORCE_DML_ERROR on forced Contact failure');
-
-        // Critical rollback assertion: Account must NOT persist after rollback
-        List<Account> accounts = [SELECT Id FROM Account WHERE Name = :ROLLBACK_ORG_NAME];
-        System.assertEquals(true, accounts.isEmpty(),
-            'Account must not persist after Contact DML failure — rollback must have executed');
-
-        // Then — failed event assertions (event survives DML rollback — PUBLISH_IMMEDIATELY)
-        List<Sfdc_Accountuser_CreatedFailed__e> failedEvents = getPublishedFailedEvents();
-        System.assertEquals(1, failedEvents.size(),
-            'Expected exactly 1 Sfdc_Accountuser_CreatedFailed__e published despite DML rollback');
-
-        // Account was inserted before the forced Contact failure — AcctCaseSafeID__c must be populated
-        // even though the Account was rolled back afterwards (event captured before rollback)
-        Sfdc_Accountuser_CreatedFailed__e evt = failedEvents[0];
-        System.assertNotEquals(null, evt.AcctCaseSafeID__c,
-            'Failed event AcctCaseSafeID__c must carry the Account Id — it existed at publish time before rollback');
-        System.assertEquals(null, evt.ContactCaseSafeID__c,
-            'Failed event ContactCaseSafeID__c must be null — Contact was never committed');
-        System.assertEquals(RestContext.response.statusCode, Integer.valueOf(evt.Status_Code__c),
-            'Failed event Status_Code__c must equal the HTTP status returned to the caller');
-        System.assertEquals(resp.errorCode, evt.Error_Code__c,
-            'Failed event Error_Code__c must equal the errorCode returned to the caller');
-        System.assertEquals(resp.message, evt.Error_Message__c,
-            'Failed event Error_Message__c must equal the message returned to the caller');
-
-        // Then — 0 success events
-        List<Sfdc_Accountuser_CreatedSuccess__e> successEvents = getPublishedSuccessEvents();
-        System.assertEquals(0, successEvents.size(),
-            'Expected 0 Sfdc_Accountuser_CreatedSuccess__e on Contact rollback');
+        Assert.areEqual(false, resp.success,
+            'Expected success=false for missing last_name');
+        Assert.areEqual('INVALID_INPUT', resp.errorCode,
+            'Expected errorCode INVALID_INPUT for missing last_name');
     }
 
     // =========================================================================
-    // T-26 — REQ-PE-4: Publish exception swallowed — HTTP response unchanged
+    // Scenario 4 — REQ-2: Malformed email → INVALID_INPUT
     // =========================================================================
 
     /**
-     * GIVEN a valid POST payload that results in a 500 (forceContactFailure = true)
-     *       which internally calls publishFailedEvent() inside a try-catch(Exception)
-     * WHEN POST is received
-     * THEN response is still HTTP 500 (not an unhandled exception propagating)
-     *      proving that EventBus.publish() exceptions are swallowed by the catch block
+     * GIVEN a request with a malformed user.email (no @ symbol)
+     * WHEN handlePost is invoked
+     * THEN success=false, errorCode=INVALID_INPUT
      *
-     * Note: We cannot directly make EventBus.publish() throw in test context without a
-     * dependency injection seam. This test verifies the observable contract: even on the
-     * error path, the HTTP response is a clean 500 and no uncaught exception surfaces.
-     * The swallowing is compile-time guaranteed by the try-catch(Exception e) wrapper.
-     *
-     * TDD: RED — REQ-PE-4 (publish exception must not alter HTTP response) was untested.
-     *      GREEN — the try-catch in publishFailedEvent() ensures this invariant.
+     * Triangulates validation: third distinct validation rule.
      */
     @isTest
-    static void test_PublishException_DoesNotAlterHttpResponse() {
-        // Given — force Contact failure path (calls publishFailedEvent inside try-catch)
-        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_Kai, null);
-        setupRestContext(payload);
+    static void testInvalidEmail() {
+        resetFlags();
+        KaiOnboardingService.OnboardingRequest req = buildRequest(VALID_ORG_NAME, VALID_LAST_NAME, 'not-an-email', null, null);
 
-        KaiOnboardingService.forceContactFailure = true;
-        KaiOnboardingService.forceDirectDmlInTest = true;
-
-        // When
         Test.startTest();
-        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(req);
         Test.stopTest();
 
-        // Then — HTTP response must be clean 500, no unhandled exception propagated
-        System.assertEquals(500, RestContext.response.statusCode,
-            'Expected HTTP 500 — publish exception must be swallowed, not alter the HTTP response');
-        System.assertEquals(false, resp.success,
-            'Expected success=false — publish swallowing must not change the error outcome');
-        System.assertEquals('SALESFORCE_DML_ERROR', resp.errorCode,
-            'Expected errorCode SALESFORCE_DML_ERROR — publish swallowing must not change the errorCode');
-
-        // Confirm the failed event WAS published (showing the happy-path of the try block worked)
-        List<Sfdc_Accountuser_CreatedFailed__e> failedEvents = getPublishedFailedEvents();
-        System.assertEquals(1, failedEvents.size(),
-            'Expected 1 failed event — confirms publishFailedEvent executed without unhandled exception');
+        Assert.areEqual(false, resp.success,
+            'Expected success=false for invalid email');
+        Assert.areEqual('INVALID_INPUT', resp.errorCode,
+            'Expected errorCode INVALID_INPUT for invalid email');
     }
 
     // =========================================================================
-    // T-27 — REQ-PE-2/REQ-PE-3: Failed event published on 404 (Account not found)
+    // Scenario 5 — Branch A: Success, Kai flag true
     // =========================================================================
 
     /**
-     * GIVEN a POST payload with org_sfdc_id = '001000000000000AAA' (valid format, not found)
-     *       AND org_id = '12345'
-     * WHEN POST is received
-     * THEN 404 ACCOUNT_NOT_FOUND + 1 Sfdc_Accountuser_CreatedFailed__e published
-     *      with Org_Id__c == '12345', Org_Sfdc_Id__c == null, User_Sfdc_Id__c == null
-     * AND  0 Sfdc_Accountuser_CreatedSuccess__e published
-     *
-     * TDD: RED — 404 failed event publishing was untested before PR-3.
-     *      GREEN — production code: handleExistingAccount() calls publishFailedEvent(orgId)
-     *              immediately after the 404 response is built (REQ-PE-3).
+     * GIVEN a valid full request with onboard_type = 'kai'
+     * WHEN handlePost is invoked
+     * THEN success=true, both Ids populated, Kai_Onboarding__c == true on both records
      */
     @isTest
-    static void test_PublishFailedEvent_AccountNotFound() {
-        // Given — valid format Account Id that does not exist in test context
-        String nonExistentAccountId = '001000000000000AAA';
-        String payload = buildPayload(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_Kai, nonExistentAccountId);
-        setupRestContext(payload);
+    static void testSuccessKaiFlagTrue() {
+        resetFlags();
+        KaiOnboardingService.OnboardingRequest req = buildRequest(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_KAI, null);
 
-        // When
         Test.startTest();
-        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(req);
         Test.stopTest();
 
-        // Then — HTTP assertions
-        System.assertEquals(404, RestContext.response.statusCode,
-            'Expected HTTP 404 when org_sfdc_id does not match any Account');
-        System.assertEquals(false, resp.success,
-            'Expected success=false on Account not found');
-        System.assertEquals('ACCOUNT_NOT_FOUND', resp.errorCode,
+        Assert.areEqual(true, resp.success,
+            'Expected success=true for valid payload');
+        Assert.areNotEqual(null, resp.accountId,
+            'Expected accountId to be populated on success');
+        Assert.areNotEqual(null, resp.contactId,
+            'Expected contactId to be populated on success');
+        Assert.areEqual(ONBOARD_TYPE_KAI, resp.onboard_type,
+            'Expected onboard_type to be echoed on success');
+
+        List<Account> accounts = [
+            SELECT Id, Name, Kai_Onboarding__c, License_Number__c,
+                   Account_Email__c, Account_POC__c, Date_Added_to_Kai__c,
+                   ShippingStreet, BillingCity
+            FROM Account
+            WHERE Id = :resp.accountId
+        ];
+        Assert.areEqual(1, accounts.size(),
+            'Expected exactly 1 Account to be inserted');
+        Assert.areEqual(true, accounts[0].Kai_Onboarding__c,
+            'Expected Kai_Onboarding__c = true on Account when onboard_type = kai');
+        Assert.areEqual('LIC-2026-001', accounts[0].License_Number__c,
+            'Expected License_Number__c to be populated from license_number');
+        Assert.areEqual(VALID_EMAIL, accounts[0].Account_Email__c,
+            'Expected Account_Email__c to be populated from user.email');
+        Assert.areEqual(VALID_LAST_NAME, accounts[0].Account_POC__c,
+            'Expected Account_POC__c to be populated from user.last_name');
+        Assert.areEqual(Date.today(), accounts[0].Date_Added_to_Kai__c,
+            'Expected Date_Added_to_Kai__c to be set to today');
+        Assert.areEqual('456 Elm St', accounts[0].ShippingStreet,
+            'Expected ShippingStreet to be populated from user.mailing_address_1');
+        Assert.areEqual('Dallas', accounts[0].BillingCity,
+            'Expected BillingCity to be populated from user.mailing_city');
+
+        List<Contact> contacts = [
+            SELECT Id, AccountId, Kai_Onboarding__c, Kai_User_ID__c,
+                   Kai_Activation_URL__c, Contact_Role__c, Company_User_Type__c
+            FROM Contact
+            WHERE Id = :resp.contactId
+        ];
+        Assert.areEqual(1, contacts.size(),
+            'Expected exactly 1 Contact to be inserted');
+        Assert.areEqual(true, contacts[0].Kai_Onboarding__c,
+            'Expected Kai_Onboarding__c = true on Contact when onboard_type = kai');
+        Assert.areEqual(resp.accountId, contacts[0].AccountId,
+            'Expected Contact to be linked to the created Account');
+        Assert.areEqual('USR001', contacts[0].Kai_User_ID__c,
+            'Expected Kai_User_ID__c to be populated from user_id');
+        Assert.areEqual('https://portal.example.com/activate/USR001', contacts[0].Kai_Activation_URL__c,
+            'Expected Kai_Activation_URL__c to be populated from activation_url');
+        Assert.areEqual('Orthodontist', contacts[0].Contact_Role__c,
+            'Expected Contact_Role__c to be populated from user.role');
+        Assert.areEqual('Account Owner', contacts[0].Company_User_Type__c,
+            'Expected Company_User_Type__c to be mapped from Customer Account Owner');
+    }
+
+    // =========================================================================
+    // Scenario 6 — Branch A: Success, Kai flag false (no onboard_type)
+    // =========================================================================
+
+    /**
+     * GIVEN a valid request WITHOUT onboard_type
+     * WHEN handlePost is invoked
+     * THEN success=true, Kai_Onboarding__c == false on both records
+     *
+     * Triangulates Scenario 5: different onboard_type value → different flag outcome.
+     */
+    @isTest
+    static void testSuccessKaiFlagFalse() {
+        resetFlags();
+        // null onboardType, null orgSfdcId → Branch A (create new Account)
+        KaiOnboardingService.OnboardingRequest req = buildRequest(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, null, null);
+
+        Test.startTest();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(req);
+        Test.stopTest();
+
+        Assert.areEqual(true, resp.success,
+            'Expected success=true for valid payload');
+        Assert.areEqual(null, resp.onboard_type,
+            'Expected onboard_type to be echoed as null when absent from the request');
+
+        List<Account> accounts = [
+            SELECT Id, Name, Kai_Onboarding__c, License_Number__c
+            FROM Account
+            WHERE Id = :resp.accountId
+        ];
+        Assert.areEqual(1, accounts.size(),
+            'Expected exactly 1 Account to be inserted');
+        Assert.areEqual(false, accounts[0].Kai_Onboarding__c,
+            'Expected Kai_Onboarding__c = false on Account when onboard_type is absent');
+        Assert.areEqual('LIC-2026-001', accounts[0].License_Number__c,
+            'Expected License_Number__c to be populated from license_number');
+
+        List<Contact> contacts = [
+            SELECT Id, Kai_Onboarding__c, Kai_User_ID__c
+            FROM Contact
+            WHERE Id = :resp.contactId
+        ];
+        Assert.areEqual(1, contacts.size(),
+            'Expected exactly 1 Contact to be inserted');
+        Assert.areEqual(false, contacts[0].Kai_Onboarding__c,
+            'Expected Kai_Onboarding__c = false on Contact when onboard_type is absent');
+        Assert.areEqual('USR001', contacts[0].Kai_User_ID__c,
+            'Expected Kai_User_ID__c to be populated from user_id');
+    }
+
+    // =========================================================================
+    // Scenario 7 — Branch B: org_sfdc_id provided but Account not found
+    // =========================================================================
+
+    /**
+     * GIVEN a request with org_sfdc_id that does not match any Account in the org
+     * WHEN handlePost is invoked
+     * THEN success=false, errorCode=ACCOUNT_NOT_FOUND, accountId=null, no DML executed
+     */
+    @isTest
+    static void testOrgSfdcIdNotFound() {
+        resetFlags();
+        // Valid Salesforce Id format but guaranteed not to exist in test context
+        String fakeAccountId = '0016g00000000001AAA';
+        KaiOnboardingService.OnboardingRequest req = buildRequest(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, null, fakeAccountId);
+
+        Test.startTest();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(req);
+        Test.stopTest();
+
+        Assert.areEqual(false, resp.success,
+            'Expected success=false when Account not found');
+        Assert.areEqual('ACCOUNT_NOT_FOUND', resp.errorCode,
             'Expected errorCode ACCOUNT_NOT_FOUND');
+        Assert.areEqual(null, resp.accountId,
+            'Expected accountId to be null when Account not found');
+        Assert.isTrue(resp.message.contains(fakeAccountId),
+            'Expected error message to include the org_sfdc_id that was searched');
 
-        // Then — failed event assertions
-        List<Sfdc_Accountuser_CreatedFailed__e> failedEvents = getPublishedFailedEvents();
-        System.assertEquals(1, failedEvents.size(),
-            'Expected exactly 1 Sfdc_Accountuser_CreatedFailed__e published on 404');
-
-        Sfdc_Accountuser_CreatedFailed__e evt = failedEvents[0];
-        System.assertEquals('12345', evt.uLab_Acct_Number__c,
-            'Failed event Kai_Acct_Number__c must carry org_id from the payload');
-        System.assertEquals(null, evt.AcctCaseSafeID__c,
-            'Failed event AcctCaseSafeID__c must be null — no Account was committed');
-        System.assertEquals(null, evt.ContactCaseSafeID__c,
-            'Failed event ContactCaseSafeID__c must be null — no Contact was committed');
-        System.assertEquals('USR001', evt.Portal_User_ID__c,
-            'Failed event Kai_User_ID__c must carry user_id from the payload');
-        System.assertEquals('kai', evt.OnboardType__c,
-            'Failed event OnboardType__c must carry onboard type from the payload');
-        System.assertEquals(RestContext.response.statusCode, Integer.valueOf(evt.Status_Code__c),
-            'Failed event Status_Code__c must equal the HTTP status returned to the caller');
-        System.assertEquals(resp.errorCode, evt.Error_Code__c,
-            'Failed event Error_Code__c must equal the errorCode returned to the caller');
-        System.assertEquals(resp.message, evt.Error_Message__c,
-            'Failed event Error_Message__c must equal the message returned to the caller');
-
-        // Then — 0 success events
-        List<Sfdc_Accountuser_CreatedSuccess__e> successEvents = getPublishedSuccessEvents();
-        System.assertEquals(0, successEvents.size(),
-            'Expected 0 Sfdc_Accountuser_CreatedSuccess__e on Account not found');
+        List<Account> accounts = [SELECT Id FROM Account WHERE Name = :VALID_ORG_NAME];
+        Assert.isTrue(accounts.isEmpty(),
+            'No Account should be created when Branch B cannot find the existing Account');
     }
 
+    // =========================================================================
+    // Scenario 8 — Branch B: org_sfdc_id found → Account updated + Contact created
+    // =========================================================================
+
+    /**
+     * GIVEN a request with a valid org_sfdc_id that matches an existing Account
+     * WHEN handlePost is invoked
+     * THEN success=true, the existing Account is updated (not a new one created),
+     *      and a new Contact is created linked to that Account
+     */
+    @isTest
+    static void testOrgSfdcIdFoundUpdatesAccountAndCreatesContact() {
+        resetFlags();
+        Account existing = insertExistingAccount();
+
+        KaiOnboardingService.OnboardingRequest req =
+            buildRequest(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_KAI, existing.Id);
+
+        Test.startTest();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(req);
+        Test.stopTest();
+
+        Assert.areEqual(true, resp.success,
+            'Expected success=true for Branch B happy path');
+        Assert.areEqual(existing.Id, resp.accountId,
+            'Expected accountId to be the pre-existing Account, not a newly created one');
+        Assert.areNotEqual(null, resp.contactId,
+            'Expected contactId to be populated on success');
+
+        List<Account> accounts = [
+            SELECT Id, Name, Kai_Onboarding__c, License_Number__c,
+                   Account_Email__c, Account_POC__c,
+                   ShippingStreet, BillingCity
+            FROM Account
+            WHERE Id = :existing.Id
+        ];
+        Assert.areEqual(1, accounts.size(),
+            'Expected exactly 1 Account with the pre-existing Id');
+        Assert.areEqual(VALID_ORG_NAME, accounts[0].Name,
+            'Expected Account Name to be updated to payload org_name');
+        Assert.areEqual(true, accounts[0].Kai_Onboarding__c,
+            'Expected Kai_Onboarding__c = true on updated Account');
+        Assert.areEqual('LIC-2026-001', accounts[0].License_Number__c,
+            'Expected License_Number__c to be populated from license_number on Account update');
+        Assert.areEqual(VALID_EMAIL, accounts[0].Account_Email__c,
+            'Expected Account_Email__c to be populated from user.email on Account update');
+        Assert.areEqual(VALID_LAST_NAME, accounts[0].Account_POC__c,
+            'Expected Account_POC__c to be populated from user.last_name on Account update');
+        Assert.areEqual('456 Elm St', accounts[0].ShippingStreet,
+            'Expected ShippingStreet to be populated from user.mailing_address_1 on Account update');
+        Assert.areEqual('Dallas', accounts[0].BillingCity,
+            'Expected BillingCity to be populated from user.mailing_city on Account update');
+
+        List<Account> allAccounts = [SELECT Id FROM Account];
+        Assert.areEqual(1, allAccounts.size(),
+            'Branch B must not create a new Account — only the pre-existing one should exist');
+
+        List<Contact> contacts = [
+            SELECT Id, AccountId, Kai_Onboarding__c, LastName, Kai_User_ID__c,
+                   Kai_Activation_URL__c, Contact_Role__c
+            FROM Contact
+            WHERE Id = :resp.contactId
+        ];
+        Assert.areEqual(1, contacts.size(),
+            'Expected exactly 1 Contact to be created');
+        Assert.areEqual(existing.Id, contacts[0].AccountId,
+            'Expected Contact to be linked to the pre-existing Account');
+        Assert.areEqual(true, contacts[0].Kai_Onboarding__c,
+            'Expected Kai_Onboarding__c = true on Contact');
+        Assert.areEqual(VALID_LAST_NAME, contacts[0].LastName,
+            'Expected Contact LastName to match payload user.last_name');
+        Assert.areEqual('USR001', contacts[0].Kai_User_ID__c,
+            'Expected Kai_User_ID__c to be populated from user_id');
+        Assert.areEqual('https://portal.example.com/activate/USR001', contacts[0].Kai_Activation_URL__c,
+            'Expected Kai_Activation_URL__c to be populated from activation_url');
+        Assert.areEqual('Orthodontist', contacts[0].Contact_Role__c,
+            'Expected Contact_Role__c to be populated from user.role');
+    }
+
+    // =========================================================================
+    // Scenario 9 — Branch B: partial merge preserves fields omitted from request
+    // =========================================================================
+
+    /**
+     * GIVEN an existing Account with values in fields the request below omits
+     *       (Phone, ShippingCity) AND a request that omits user.phone/mailing_city
+     * WHEN handlePost is invoked
+     * THEN fields present in the request are updated, and fields omitted from
+     *      the request preserve the Account's existing values
+     */
     @IsTest
     static void testOrgSfdcIdFoundPreservesFieldsOmittedFromPayload() {
-        // Insert a pre-existing Account with values in fields the payload below will omit
+        resetFlags();
         Account existing = new Account(
-            Name                    = 'Original Name',
-            Type                    = 'Other',
-            Account_Status__c       = 'Prospect',
-            Phone                   = '9725550199',
-            ShippingCity            = 'Original Shipping City',
-            RecordTypeId            = Schema.SObjectType.Account
+            Name              = 'Original Name',
+            Type              = 'Other',
+            Account_Status__c = 'Prospect',
+            Phone             = '9725550199',
+            ShippingCity      = 'Original Shipping City',
+            RecordTypeId      = Schema.SObjectType.Account
                 .getRecordTypeInfosByDeveloperName()
                 .get('Commercial')
                 .getRecordTypeId()
         );
         insert existing;
 
-        // Payload omits user.phone and user.mailing_city (null) — everything else present
-        String payload = '{'
-            + '"org_sfdc_id": "' + existing.Id + '",'
-            + '"org_id": "12345",'
-            + '"org_name": "' + VALID_ORG_NAME + '",'
-            + '"org_type": "Dental Practice",'
-            + '"org_status": "Prospect",'
-            + '"license_number": "LIC-2026-001",'
-            + '"user": {'
-            +   '"first_name": "John",'
-            +   '"last_name": "' + VALID_LAST_NAME + '",'
-            +   '"email": "' + VALID_EMAIL + '",'
-            +   '"cell_phone": "4145550101",'
-            +   '"mailing_address_1": "456 Elm St",'
-            +   '"mailing_country": "US",'
-            +   '"mailing_state": "TX",'
-            +   '"mailing_zipcode": "75001",'
-            +   '"user_type": "Customer Account Owner",'
-            +   '"role": "Orthodontist",'
-            +   '"user_id": "USR001",'
-            +   '"activation_url": "https://portal.example.com/activate/USR001"'
-            + '}'
-            + '}';
-        setupRestContext(payload);
+        // Request omits user.phone and user.mailing_city (null) — everything else present
+        KaiOnboardingService.OnboardingRequest req = new KaiOnboardingService.OnboardingRequest();
+        req.org_sfdc_id    = existing.Id;
+        req.org_id         = '12345';
+        req.org_name       = VALID_ORG_NAME;
+        req.org_type       = 'Dental Practice';
+        req.org_status     = 'Prospect';
+        req.license_number = 'LIC-2026-001';
+
+        KaiOnboardingService.ContactRequest user = new KaiOnboardingService.ContactRequest();
+        user.first_name        = 'John';
+        user.last_name          = VALID_LAST_NAME;
+        user.email              = VALID_EMAIL;
+        user.cell_phone         = '4145550101';
+        user.mailing_address_1  = '456 Elm St';
+        user.mailing_country    = 'US';
+        user.mailing_state      = 'TX';
+        user.mailing_zipcode    = '75001';
+        user.user_type          = 'Customer Account Owner';
+        user.role               = 'Orthodontist';
+        user.user_id            = 'USR001';
+        user.activation_url     = 'https://portal.example.com/activate/USR001';
+        req.user = user;
 
         Test.startTest();
-        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(req);
         Test.stopTest();
 
-        System.assertEquals(201, RestContext.response.statusCode,
-            'Expected HTTP 201 when org_sfdc_id matches an existing Account');
-        System.assertEquals(true, resp.success,
+        Assert.areEqual(true, resp.success,
             'Expected success=true for Branch B partial-merge scenario');
 
         Account updated = [
@@ -1239,19 +519,250 @@ private class KaiOnboardingServiceTest {
             WHERE Id = :existing.Id
         ];
 
-        // Fields present in the payload must be updated
-        System.assertEquals(VALID_ORG_NAME, updated.Name,
-            'Expected Name to be updated from payload org_name');
-        System.assertEquals('456 Elm St', updated.ShippingStreet,
-            'Expected ShippingStreet to be updated from payload user.mailing_address_1');
-        System.assertEquals('LIC-2026-001', updated.License_Number__c,
-            'Expected License_Number__c to be updated from payload license_number');
+        // Fields present in the request must be updated
+        Assert.areEqual(VALID_ORG_NAME, updated.Name,
+            'Expected Name to be updated from request org_name');
+        Assert.areEqual('456 Elm St', updated.ShippingStreet,
+            'Expected ShippingStreet to be updated from request user.mailing_address_1');
+        Assert.areEqual('LIC-2026-001', updated.License_Number__c,
+            'Expected License_Number__c to be updated from request license_number');
 
-        // Fields omitted (blank) from the payload must preserve the existing Account values
-        System.assertEquals('9725550199', updated.Phone,
-            'Expected Phone to be preserved when payload does not send user.phone');
-        System.assertEquals('Original Shipping City', updated.ShippingCity,
-            'Expected ShippingCity to be preserved when payload does not send user.mailing_city');
+        // Fields omitted (blank) from the request must preserve the existing Account values
+        Assert.areEqual('9725550199', updated.Phone,
+            'Expected Phone to be preserved when request does not send user.phone');
+        Assert.areEqual('Original Shipping City', updated.ShippingCity,
+            'Expected ShippingCity to be preserved when request does not send user.mailing_city');
     }
 
+    // =========================================================================
+    // Scenario 10 — Account insert failure → SALESFORCE_DML_ERROR
+    // =========================================================================
+
+    /**
+     * GIVEN a request that passes validation but causes Account DML failure
+     *       (org_name exceeds 255 chars → triggers platform-level field length error)
+     * WHEN handlePost is invoked
+     * THEN success=false, errorCode=SALESFORCE_DML_ERROR, no Contact created
+     *
+     * Approach: pass a 256-character org_name. validateInput() only checks for
+     * null/empty; the platform enforces the 255-char Name limit at DML time,
+     * guaranteeing a deterministic Account DML failure without relying on
+     * org-specific validation rules.
+     */
+    @isTest
+    static void testAccountInsertFailure() {
+        resetFlags();
+        // 256 chars — exceeds Salesforce Account.Name limit of 255
+        String longName = 'A'.repeat(256);
+        KaiOnboardingService.OnboardingRequest req = buildRequest(longName, VALID_LAST_NAME, VALID_EMAIL, null, null);
+
+        // Activate the @TestVisible flag to force Account DML failure
+        KaiOnboardingService.forceDirectDmlInTest = true;
+
+        Test.startTest();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(req);
+        Test.stopTest();
+
+        Assert.areEqual(false, resp.success,
+            'Expected success=false when Account DML fails');
+        Assert.areEqual('SALESFORCE_DML_ERROR', resp.errorCode,
+            'Expected errorCode SALESFORCE_DML_ERROR on Account DML failure');
+
+        // Verify no Contact was created (Account failed first, no AccountId existed)
+        List<Contact> contacts = [SELECT Id FROM Contact WHERE LastName = :VALID_LAST_NAME];
+        Assert.isTrue(contacts.isEmpty(),
+            'No Contact should be created when Account DML fails');
+    }
+
+    // =========================================================================
+    // Scenario 11 — Contact failure → rollback Account
+    // =========================================================================
+
+    /**
+     * GIVEN a valid request that passes validation but triggers Contact DML failure
+     *       (via @TestVisible forceContactFailure flag)
+     * WHEN handlePost is invoked
+     * THEN success=false, errorCode=SALESFORCE_DML_ERROR, and zero Accounts
+     *      persist in the database (rollback verified via SOQL)
+     */
+    @isTest
+    static void testRollbackOnContactFailure() {
+        resetFlags();
+        KaiOnboardingService.OnboardingRequest req = buildRequest(ROLLBACK_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, null, null);
+
+        // Activate the @TestVisible flag to force Contact DML failure
+        KaiOnboardingService.forceContactFailure  = true;
+        KaiOnboardingService.forceDirectDmlInTest = true;
+
+        Test.startTest();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(req);
+        Test.stopTest();
+
+        Assert.areEqual(false, resp.success,
+            'Expected success=false when Contact DML fails');
+        Assert.areEqual('SALESFORCE_DML_ERROR', resp.errorCode,
+            'Expected errorCode SALESFORCE_DML_ERROR on DML failure');
+
+        // Critical rollback assertion: Account must NOT exist in DB after rollback
+        List<Account> accounts = [SELECT Id FROM Account WHERE Name = :ROLLBACK_ORG_NAME];
+        Assert.isTrue(accounts.isEmpty(),
+            'Account must not persist after Contact DML failure — rollback must have executed');
+    }
+
+    // =========================================================================
+    // Scenario 12 — Account DML DUPLICATE_VALUE → DUPLICATE_RECORD
+    // =========================================================================
+
+    /**
+     * GIVEN a DML failure at Account insert whose StatusCode is overridden to
+     *       DUPLICATE_VALUE
+     * WHEN handlePost is invoked
+     * THEN success=false, errorCode=DUPLICATE_RECORD
+     *
+     * Technique: trigger a real DmlException via a 256-char Account name, then
+     * inject the StatusCode via @TestVisible forceDmlStatusCodeOverride so the
+     * helper classifies it as a duplicate without relying on org Duplicate Rules.
+     */
+    @isTest
+    static void testDuplicateRecordReturns409() {
+        resetFlags();
+        String longName = 'A'.repeat(256);
+        KaiOnboardingService.OnboardingRequest req = buildRequest(longName, VALID_LAST_NAME, VALID_EMAIL, ONBOARD_TYPE_KAI, null);
+
+        KaiOnboardingService.forceDmlStatusCodeOverride = StatusCode.DUPLICATE_VALUE;
+        // Activate the @TestVisible flag to force Account DML failure
+        KaiOnboardingService.forceDirectDmlInTest = true;
+
+        Test.startTest();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(req);
+        Test.stopTest();
+
+        Assert.areEqual(false, resp.success,
+            'Expected success=false on duplicate error');
+        Assert.areEqual('DUPLICATE_RECORD', resp.errorCode,
+            'Expected errorCode DUPLICATE_RECORD for DUPLICATE_VALUE StatusCode');
+        Assert.isTrue(resp.message.contains('Duplicate record detected'),
+            'Expected message to indicate duplicate detection');
+    }
+
+    // =========================================================================
+    // Scenario 13 — Contact DML DUPLICATE_VALUE → DUPLICATE_RECORD
+    // =========================================================================
+
+    /**
+     * GIVEN a valid Account (created successfully) but a 256-char user.last_name
+     *       forces the Contact insert to throw a DmlException, whose StatusCode
+     *       is overridden to DUPLICATE_VALUE
+     * WHEN handlePost is invoked
+     * THEN success=false, errorCode=DUPLICATE_RECORD
+     *
+     * This is the sole coverage of the DmlException catch block inside
+     * insertContact() — Scenario 12 fails at the Account insert, a different
+     * catch block. A 256-char LastName is used (instead of org_name) so the
+     * Account insert succeeds and the failure is triggered in the Contact
+     * insert path.
+     */
+    @isTest
+    static void testContactDuplicateRecordReturnsDuplicateRecord() {
+        resetFlags();
+        String longLastName = 'S'.repeat(256);
+        KaiOnboardingService.OnboardingRequest req = buildRequest(VALID_ORG_NAME, longLastName, VALID_EMAIL, ONBOARD_TYPE_KAI, null);
+
+        // Override the DML status code so the Contact DmlException is classified as a duplicate
+        KaiOnboardingService.forceDmlStatusCodeOverride = StatusCode.DUPLICATE_VALUE;
+        // Activate the @TestVisible flag to force Contact DML failure
+        KaiOnboardingService.forceDirectDmlInTest = true;
+
+        Test.startTest();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(req);
+        Test.stopTest();
+
+        Assert.areEqual(false, resp.success,
+            'Expected success=false on duplicate DML error');
+        Assert.areEqual('DUPLICATE_RECORD', resp.errorCode,
+            'Expected errorCode DUPLICATE_RECORD for DUPLICATE_VALUE classification');
+    }
+
+    // =========================================================================
+    // Scenario 14 — VALIDATION_RULE_VIOLATION
+    // =========================================================================
+
+    /**
+     * GIVEN a DML failure whose StatusCode is overridden to
+     *       FIELD_CUSTOM_VALIDATION_EXCEPTION
+     * WHEN handlePost is invoked
+     * THEN success=false, errorCode=VALIDATION_RULE_VIOLATION
+     *
+     * Same injection technique as Scenario 12 — real DmlException via 256-char
+     * name, StatusCode overridden via @TestVisible flag.
+     */
+    @isTest
+    static void testValidationRuleViolationReturns422() {
+        resetFlags();
+        String longName = 'A'.repeat(256);
+        KaiOnboardingService.OnboardingRequest req = buildRequest(longName, VALID_LAST_NAME, VALID_EMAIL, null, null);
+
+        KaiOnboardingService.forceDmlStatusCodeOverride = StatusCode.FIELD_CUSTOM_VALIDATION_EXCEPTION;
+        // Activate the @TestVisible flag to force DML failure
+        KaiOnboardingService.forceDirectDmlInTest = true;
+
+        Test.startTest();
+        KaiOnboardingService.OnboardingResponse resp = KaiOnboardingService.handlePost(req);
+        Test.stopTest();
+
+        Assert.areEqual(false, resp.success,
+            'Expected success=false on validation rule rejection');
+        Assert.areEqual('VALIDATION_RULE_VIOLATION', resp.errorCode,
+            'Expected errorCode VALIDATION_RULE_VIOLATION for FIELD_CUSTOM_VALIDATION_EXCEPTION StatusCode');
+        Assert.isTrue(resp.message.contains('validation rule rejected'),
+            'Expected message to reference validation rule rejection');
+    }
+
+    // =========================================================================
+    // Scenario 15 — D1 regression: onboard_type echoed on every error path
+    // =========================================================================
+
+    /**
+     * GIVEN requests that fail at each distinct error stage (validation,
+     *       account-not-found, and Account DML failure)
+     * WHEN handlePost is invoked with a non-null onboard_type on each
+     * THEN the returned envelope's onboard_type equals the request's
+     *      onboard_type on every path — regression guard for defect D1,
+     *      where buildDmlErrorResponse previously hardcoded 'kai'.
+     */
+    @isTest
+    static void testErrorPathEchoesOnboardType() {
+        resetFlags();
+        String customOnboardType = 'udesign.cloud';
+
+        // Path 1 — validation failure (INVALID_INPUT)
+        KaiOnboardingService.OnboardingRequest validationReq =
+            buildRequest(null, VALID_LAST_NAME, VALID_EMAIL, customOnboardType, null);
+        KaiOnboardingService.OnboardingResponse validationResp = KaiOnboardingService.handlePost(validationReq);
+        Assert.areEqual(customOnboardType, validationResp.onboard_type,
+            'Expected onboard_type to be echoed on the INVALID_INPUT path');
+
+        // Path 2 — Account not found (ACCOUNT_NOT_FOUND)
+        String fakeAccountId = '0016g00000000001AAA';
+        KaiOnboardingService.OnboardingRequest notFoundReq =
+            buildRequest(VALID_ORG_NAME, VALID_LAST_NAME, VALID_EMAIL, customOnboardType, fakeAccountId);
+        KaiOnboardingService.OnboardingResponse notFoundResp = KaiOnboardingService.handlePost(notFoundReq);
+        Assert.areEqual(customOnboardType, notFoundResp.onboard_type,
+            'Expected onboard_type to be echoed on the ACCOUNT_NOT_FOUND path');
+
+        // Path 3 — Account DML failure (SALESFORCE_DML_ERROR) — regression target for D1
+        KaiOnboardingService.forceDirectDmlInTest = true;
+        String longName = 'A'.repeat(256);
+        KaiOnboardingService.OnboardingRequest dmlReq =
+            buildRequest(longName, VALID_LAST_NAME, VALID_EMAIL, customOnboardType, null);
+
+        Test.startTest();
+        KaiOnboardingService.OnboardingResponse dmlResp = KaiOnboardingService.handlePost(dmlReq);
+        Test.stopTest();
+
+        Assert.areEqual(false, dmlResp.success,
+            'Expected success=false on the forced Account DML failure path');
+        Assert.areEqual(customOnboardType, dmlResp.onboard_type,
+            'D1 regression: onboard_type must be echoed from the request, not hardcoded to "kai"');
+    }
 }
