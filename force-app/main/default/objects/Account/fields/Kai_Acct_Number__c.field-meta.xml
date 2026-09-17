@@ -3,7 +3,7 @@
     <fullName>Kai_Acct_Number__c</fullName>
     <externalId>true</externalId>
     <label>Kai Acct Number</label>
-    <precision>6</precision>
+    <precision>10</precision>
     <required>false</required>
     <scale>0</scale>
     <trackFeedHistory>false</trackFeedHistory>

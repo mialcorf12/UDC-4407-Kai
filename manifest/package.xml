@@ -9,13 +9,30 @@
 		<members>Account.Account_Status__c</members>
 		<members>Account.Date_Added_to_Kai__c</members>
 		<members>Account.Kai_Acct_Number__c</members>
+		<members>Account.KAI_Approved__c</members>
 		<members>Account.Kai_Onboarding__c</members>
+		<members>Account.KAI_Onboarding_Status__c</members>
+		<members>Account.KAI_Rejected__c</members>
+		<members>Account.Send_KAI_to_Boomi__c</members>
 		<members>Contact.Kai_Activation_URL__c</members>
 		<members>Contact.Kai_Invite_Email_Sent__c</members>
 		<members>Contact.Kai_Onboarding__c</members>
 		<members>Contact.Kai_User_ID__c</members>
+		<members>Contact.Send_KAI_to_Boomi__c</members>
 		<members>Patient__c.Kai_Onboarding__c</members>
 		<name>CustomField</name>
+	</types>
+	<types>
+		<members>KAI_Boomi_Approved_Rejected</members>
+		<name>Flow</name>
+	</types>
+	<types>
+		<members>KAI_Boomi_Approved_Rejected</members>
+		<name>FlowDefinition</name>
+	</types>
+	<types>
+		<members>Account.KAI_Pending_Approval</members>
+		<name>ListView</name>
 	</types>
 	<!--<types>
 		<members>Copy_pricing_fields_on_MRA_record_from_MR_record_on_Effective_date</members>
