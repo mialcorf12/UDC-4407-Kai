@@ -26,6 +26,7 @@ create a new version for
 # post deploy task
 - field visibility
 - add fields in a new layout section
+- enable flow
 - add conditions in Account and Contact Duplication Rules = Current User: Usernamenot equal toapiuser@ulabsystems.com.staging
 
 
